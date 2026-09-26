@@ -2,22 +2,37 @@
 set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 fast_anser_root=${1:-"$project_root/../njutest/fast-anser"}
-scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-dogfood.XXXXXX")
+scratch_parent=${TMPDIR:-/tmp}
+scratch_created=$(mktemp -d "${scratch_parent%/}/swiftest-dogfood.XXXXXX")
+scratch_root=$(CDPATH= cd -- "$scratch_created" && pwd -P)
 trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
 module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
 cd "$project_root"
-swift run --disable-sandbox swiftest verify "$project_root" --output "$scratch_root/swiftest.json"
-swift run --disable-sandbox swiftest replay "$scratch_root/swiftest.json"
+swift run --disable-sandbox --disable-index-store -j 4 swiftest verify "$project_root" --allow-gaps --output "$scratch_root/swiftest.json"
+grep -Fq '"verdict":"GAPS+UNSETTLED"' "$scratch_root/swiftest.json"
+if swift run --disable-sandbox --disable-index-store -j 4 swiftest replay "$scratch_root/swiftest.json"
+then
+    exit 1
+fi
 if test -d "$fast_anser_root"
 then
     fast_before="$scratch_root/fast-before"
     fast_after="$scratch_root/fast-after"
     find "$fast_anser_root" -type f ! -path '*/.git/*' ! -path '*/.build/*' ! -path '*/DerivedData/*' -exec shasum -a 256 {} \; | LC_ALL=C sort >"$fast_before"
-    swift run --disable-sandbox swiftest verify "$fast_anser_root" --allow-gaps --output "$scratch_root/fast-anser.json"
-    swift run --disable-sandbox swiftest replay "$scratch_root/fast-anser.json"
+    if swift run --disable-sandbox --disable-index-store -j 4 swiftest verify "$fast_anser_root" --allow-gaps --output "$scratch_root/fast-anser.json"
+    then
+        :
+    else
+        test -f "$scratch_root/fast-anser.json"
+    fi
+    grep -Fq '"verdict":"GAPS+UNSETTLED"' "$scratch_root/fast-anser.json"
+    if swift run --disable-sandbox --disable-index-store -j 4 swiftest replay "$scratch_root/fast-anser.json"
+    then
+        exit 1
+    fi
     find "$fast_anser_root" -type f ! -path '*/.git/*' ! -path '*/.build/*' ! -path '*/DerivedData/*' -exec shasum -a 256 {} \; | LC_ALL=C sort >"$fast_after"
     cmp "$fast_before" "$fast_after"
 else

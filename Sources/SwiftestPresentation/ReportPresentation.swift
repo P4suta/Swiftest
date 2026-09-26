@@ -5,13 +5,20 @@ import SwiftestScore
 
 public enum ReportPresentation {
     public static func text(_ report: AssuredReport) -> String {
-        [
-            "verdict=" + report.catalog.verdict.rawValue,
+        let faultSummary: String
+        switch report.faults {
+        case .structural(let audit):
+            faultSummary = "faults=structural scenarios=" + String(audit.scenarioCount.rawValue)
+        case .unverified:
+            faultSummary = "faults=unverified"
+        }
+        return [
+            "verdict=" + report.verdict.rawValue,
             "run=" + report.catalog.evidence.run.rawValue,
             "scope=" + report.catalog.evidence.scope.rawValue,
             "score=" + report.score.ratioDescription,
             "executions=" + String(report.catalog.evidence.executionCount.rawValue),
-            "fault-scenarios=" + String(report.faults.scenarioCount.rawValue),
+            faultSummary,
         ].joined(separator: "\n") + "\n"
     }
 }

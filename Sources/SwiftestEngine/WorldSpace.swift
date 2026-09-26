@@ -3,7 +3,11 @@ import SwiftestModel
 public enum WorldSpaceError: Error, Equatable, Sendable {
     case emptyAxis(String)
     case worldCountOverflow
-    case worldIdentifier(IdentifierError)
+}
+
+fileprivate struct AxisCardinality {
+    let name: String
+    let count: Int
 }
 
 public struct WorldSpace: Hashable, Sendable {
@@ -61,11 +65,13 @@ public struct WorldSpace: Hashable, Sendable {
     }
 
     public func executionCount() throws(WorldSpaceError) -> EvidenceCount {
-        let counts = executionCounts()
-        try ensureNonempty(counts)
+        let cardinalities = axisCardinalities()
         var product = 1
-        for count in counts {
-            let multiplication = product.multipliedReportingOverflow(by: count)
+        for axis in cardinalities {
+            if axis.count == 0 {
+                throw .emptyAxis(axis.name)
+            }
+            let multiplication = product.multipliedReportingOverflow(by: axis.count)
             if multiplication.overflow {
                 throw .worldCountOverflow
             }
@@ -78,114 +84,99 @@ public struct WorldSpace: Hashable, Sendable {
         }
     }
 
-    public func allWorlds() throws(WorldSpaceError) -> [World] {
-        let buildValues = builds.executionValues
-        let operatingSystemValues = operatingSystems.executionValues
-        let deviceValues = devices.executionValues
-        let localeValues = locales.executionValues
-        let layoutDirectionValues = layoutDirections.executionValues
-        let appearanceValues = appearances.executionValues
-        let accessibilityValues = accessibilityScenarios.executionValues
-        let permissionValues = permissions.executionValues
-        let locationValues = locations.executionValues
-        let biometricValues = biometrics.executionValues
-        let lifecycleValues = lifecycles.executionValues
-        let dataValues = dataScenarios.executionValues
-        let serviceFaultValues = serviceFaults.executionValues
-        let cancellationValues = cancellations.executionValues
-        let scheduleValues = schedules.executionValues
-        let mutantValues = mutants.executionValues
-        let counts = executionCounts()
-        try ensureNonempty(counts)
+    public func allWorlds() throws(WorldSpaceError) -> WorldSequence {
         let count = try executionCount().rawValue
-        var result: [World] = []
-        result.reserveCapacity(count)
-        var indices = Array(repeating: 0, count: counts.count)
-        var finished = false
-        while !finished {
-            let id: WorldID
-            do {
-                id = try WorldID.parse("world-" + String(result.count))
-            } catch let error {
-                throw .worldIdentifier(error)
-            }
-            result.append(World(
-                id: id,
-                build: buildValues[indices[0]],
-                operatingSystem: operatingSystemValues[indices[1]],
-                device: deviceValues[indices[2]],
-                locale: localeValues[indices[3]],
-                layoutDirection: layoutDirectionValues[indices[4]],
-                appearance: appearanceValues[indices[5]],
-                accessibility: accessibilityValues[indices[6]],
-                permission: permissionValues[indices[7]],
-                location: locationValues[indices[8]],
-                biometrics: biometricValues[indices[9]],
-                lifecycle: lifecycleValues[indices[10]],
-                data: dataValues[indices[11]],
-                serviceFault: serviceFaultValues[indices[12]],
-                cancellation: cancellationValues[indices[13]],
-                schedule: scheduleValues[indices[14]],
-                mutant: mutantValues[indices[15]]
-            ))
-            finished = increment(&indices, counts: counts)
-        }
-        return result
+        return WorldSequence(space: self, count: count)
     }
 
-    private func executionCounts() -> [Int] {
+    fileprivate func axisCardinalities() -> [AxisCardinality] {
         [
-            builds.executionValues.count,
-            operatingSystems.executionValues.count,
-            devices.executionValues.count,
-            locales.executionValues.count,
-            layoutDirections.executionValues.count,
-            appearances.executionValues.count,
-            accessibilityScenarios.executionValues.count,
-            permissions.executionValues.count,
-            locations.executionValues.count,
-            biometrics.executionValues.count,
-            lifecycles.executionValues.count,
-            dataScenarios.executionValues.count,
-            serviceFaults.executionValues.count,
-            cancellations.executionValues.count,
-            schedules.executionValues.count,
-            mutants.executionValues.count,
+            AxisCardinality(name: "build", count: builds.executionValues.count),
+            AxisCardinality(name: "operating-system", count: operatingSystems.executionValues.count),
+            AxisCardinality(name: "device", count: devices.executionValues.count),
+            AxisCardinality(name: "locale", count: locales.executionValues.count),
+            AxisCardinality(name: "layout-direction", count: layoutDirections.executionValues.count),
+            AxisCardinality(name: "appearance", count: appearances.executionValues.count),
+            AxisCardinality(name: "accessibility", count: accessibilityScenarios.executionValues.count),
+            AxisCardinality(name: "permission", count: permissions.executionValues.count),
+            AxisCardinality(name: "location", count: locations.executionValues.count),
+            AxisCardinality(name: "biometrics", count: biometrics.executionValues.count),
+            AxisCardinality(name: "lifecycle", count: lifecycles.executionValues.count),
+            AxisCardinality(name: "data", count: dataScenarios.executionValues.count),
+            AxisCardinality(name: "service-fault", count: serviceFaults.executionValues.count),
+            AxisCardinality(name: "cancellation", count: cancellations.executionValues.count),
+            AxisCardinality(name: "schedule", count: schedules.executionValues.count),
+            AxisCardinality(name: "mutant", count: mutants.executionValues.count),
         ]
     }
+}
 
-    private func ensureNonempty(_ counts: [Int]) throws(WorldSpaceError) {
-        let names = [
-            "build",
-            "operating-system",
-            "device",
-            "locale",
-            "layout-direction",
-            "appearance",
-            "accessibility",
-            "permission",
-            "location",
-            "biometrics",
-            "lifecycle",
-            "data",
-            "service-fault",
-            "cancellation",
-            "schedule",
-            "mutant",
-        ]
-        for index in counts.indices where counts[index] == 0 {
-            throw .emptyAxis(names[index])
+public struct WorldSequence: Sequence, Sendable {
+    public let count: Int
+    private let space: WorldSpace
+
+    fileprivate init(space: WorldSpace, count: Int) {
+        self.space = space
+        self.count = count
+    }
+
+    public func makeIterator() -> WorldIterator {
+        WorldIterator(space: space, count: count)
+    }
+}
+
+public struct WorldIterator: IteratorProtocol {
+    private let space: WorldSpace
+    private let counts: [Int]
+    private var indices: [Int]
+    private let count: Int
+    private var position: Int
+
+    fileprivate init(space: WorldSpace, count: Int) {
+        self.space = space
+        self.counts = space.axisCardinalities().map(\.count)
+        self.indices = Array(repeating: 0, count: counts.count)
+        self.count = count
+        self.position = 0
+    }
+
+    public mutating func next() -> World? {
+        if position == count {
+            return nil
         }
+        let world = World(
+            id: WorldID.ordinal(UInt(position)),
+            build: space.builds.executionValues[indices[0]],
+            operatingSystem: space.operatingSystems.executionValues[indices[1]],
+            device: space.devices.executionValues[indices[2]],
+            locale: space.locales.executionValues[indices[3]],
+            layoutDirection: space.layoutDirections.executionValues[indices[4]],
+            appearance: space.appearances.executionValues[indices[5]],
+            accessibility: space.accessibilityScenarios.executionValues[indices[6]],
+            permission: space.permissions.executionValues[indices[7]],
+            location: space.locations.executionValues[indices[8]],
+            biometrics: space.biometrics.executionValues[indices[9]],
+            lifecycle: space.lifecycles.executionValues[indices[10]],
+            data: space.dataScenarios.executionValues[indices[11]],
+            serviceFault: space.serviceFaults.executionValues[indices[12]],
+            cancellation: space.cancellations.executionValues[indices[13]],
+            schedule: space.schedules.executionValues[indices[14]],
+            mutant: space.mutants.executionValues[indices[15]]
+        )
+        position += 1
+        if position < count {
+            advance()
+        }
+        return world
     }
 
-    private func increment(_ indices: inout [Int], counts: [Int]) -> Bool {
+    private mutating func advance() {
         for axis in indices.indices.reversed() {
             indices[axis] += 1
             if indices[axis] < counts[axis] {
-                return false
+                return
             }
             indices[axis] = 0
         }
-        return true
     }
 }

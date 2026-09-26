@@ -3,6 +3,7 @@ public enum ModuleRole: String, CaseIterable, Sendable {
     case executable
     case test
     case plugin
+    case macro
 }
 
 public struct ModuleDeclaration: Hashable, Sendable {
@@ -74,8 +75,13 @@ public enum SwiftestModuleGraph {
         ),
         ModuleDeclaration(
             name: "SwiftestTesting",
-            dependencies: ["SwiftestEngine", "SwiftestFaults", "SwiftestModel", "SwiftestPlatform"],
+            dependencies: ["SwiftestEngine", "SwiftestFaults", "SwiftestMacros", "SwiftestModel", "SwiftestPlatform"],
             role: .production
+        ),
+        ModuleDeclaration(
+            name: "SwiftestMacros",
+            dependencies: ["SwiftestCodec"],
+            role: .macro
         ),
         ModuleDeclaration(
             name: "SwiftestLaws",
@@ -120,7 +126,7 @@ public enum SwiftestModuleGraph {
         ),
         ModuleDeclaration(
             name: "SwiftestLawsPlugin",
-            dependencies: [],
+            dependencies: ["SwiftestLawTool"],
             role: .plugin
         ),
         ModuleDeclaration(name: "SwiftestModelTests", dependencies: ["SwiftestModel"], role: .test),
@@ -137,7 +143,11 @@ public enum SwiftestModuleGraph {
             ],
             role: .test
         ),
-        ModuleDeclaration(name: "SwiftestLawsTests", dependencies: ["SwiftestLaws"], role: .test),
+        ModuleDeclaration(
+            name: "SwiftestLawsTests",
+            dependencies: ["SwiftestLaws", "SwiftestModel", "SwiftestPlatform"],
+            role: .test
+        ),
         ModuleDeclaration(
             name: "SwiftestReportTests",
             dependencies: ["SwiftestCodec", "SwiftestDecision", "SwiftestFaults", "SwiftestModel", "SwiftestReport", "SwiftestScore"],
@@ -145,12 +155,32 @@ public enum SwiftestModuleGraph {
         ),
         ModuleDeclaration(
             name: "SwiftestTestingTests",
-            dependencies: ["SwiftestModel", "SwiftestTesting"],
+            dependencies: ["SwiftestEngine", "SwiftestModel", "SwiftestTesting"],
             role: .test
         ),
     ]
 
+    public static func requiresLawPlugin(for declaration: ModuleDeclaration) -> Bool {
+        if declaration.role == .plugin {
+            return false
+        }
+        var pluginDependencyClosure: Set<String> = ["SwiftestLawsPlugin"]
+        var changed = true
+        while changed {
+            changed = false
+            for module in declarations where pluginDependencyClosure.contains(module.name) {
+                let previousCount = pluginDependencyClosure.count
+                pluginDependencyClosure.formUnion(module.dependencies)
+                if pluginDependencyClosure.count != previousCount {
+                    changed = true
+                }
+            }
+        }
+        return !pluginDependencyClosure.contains(declaration.name)
+    }
+
     public static let systemModules: Set<String> = [
+        "CryptoKit",
         "Darwin",
         "Foundation",
         "PackagePlugin",

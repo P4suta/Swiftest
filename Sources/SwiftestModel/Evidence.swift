@@ -118,6 +118,77 @@ public struct EvidenceCatalog: Equatable, Sendable {
         self.review = review
         self.executionCount = executionCount
     }
+
+    public var coverageGaps: [Diagnostic] {
+        var gaps: [Diagnostic] = []
+        if preservationClaims.isEmpty {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "preservation-claims", detail: "none declared"))
+        }
+        if detectionClaims.isEmpty {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "detection-claims", detail: "none declared"))
+        }
+        if worlds.isEmpty {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "worlds", detail: "none executed"))
+        }
+        if mutants.isEmpty {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "mutants", detail: "none executed"))
+        }
+        if executionCount.rawValue == 0 {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "tests", detail: "none executed"))
+        }
+        if !schemaObservations.contains(where: { $0.version == .v2 && $0.status == .passed }) {
+            gaps.append(Diagnostic(code: .missingEvidence, subject: "report-schema-v2", detail: "not validated"))
+        }
+        for observation in claimObservations where observation.status == .provenIrrelevant {
+            gaps.append(Diagnostic(
+                code: .missingEvidence,
+                subject: observation.claim.rawValue + ":" + observation.world.rawValue,
+                detail: "claim irrelevance has no proof certificate"
+            ))
+        }
+        for observation in mutationObservations {
+            if observation.reached != .passed || observation.infected != .passed || observation.detected != .passed {
+                gaps.append(Diagnostic(
+                    code: .missingEvidence,
+                    subject: observation.mutant.rawValue,
+                    detail: "mutation not detected after reach and infection"
+                ))
+            }
+        }
+        return gaps
+    }
+
+    public var hasApparatusFailure: Bool {
+        failures.contains {
+            if case .apparatus = $0 {
+                return true
+            }
+            return false
+        }
+    }
+
+    public var hasUnsettledEvidence: Bool {
+        let cleanFailed = failures.contains {
+            if case .clean = $0 {
+                return true
+            }
+            return false
+        }
+        return cleanFailed || claimObservations.contains(where: { $0.status == .failed })
+            || review.status != .accepted || review.evidence == nil
+    }
+
+    public var hasGapEvidence: Bool {
+        let mutantFailed = failures.contains {
+            if case .mutant = $0 {
+                return true
+            }
+            return false
+        }
+        return mutantFailed || !coverageGaps.isEmpty
+            || lawObservations.contains(where: { $0.status != .passed })
+            || schemaObservations.contains(where: { $0.status != .passed })
+    }
 }
 
 public enum Open: Sendable {}
@@ -140,11 +211,16 @@ public enum AuditError: Error, Equatable, Sendable {
     case duplicateClaim(ClaimID)
     case duplicateWorld(WorldID)
     case duplicateMutant(MutantID)
+    case unknownClaimObservation(ClaimID, WorldID)
+    case duplicateClaimObservation(ClaimID, WorldID)
     case missingClaimObservation(ClaimID, WorldID)
+    case unknownMutationObservation(MutantID)
+    case duplicateMutationObservation(MutantID)
     case missingMutationObservation(MutantID)
+    case duplicateLawObservation(String)
+    case duplicateSchemaObservation(SchemaVersion)
     case missingLawObservation
     case missingSchemaObservation
-    case missingIndependentReview
 }
 
 public enum AuditKernel {
@@ -155,19 +231,39 @@ public enum AuditKernel {
         try ensureUnique(catalog.worlds)
         try ensureUnique(catalog.mutants)
 
+        let claims = Set(catalog.preservationClaims + catalog.detectionClaims)
+        let worlds = Set(catalog.worlds)
+        let mutants = Set(catalog.mutants)
+        var observedClaims = Set<ClaimWorldPair>()
+        for observation in catalog.claimObservations {
+            if !claims.contains(observation.claim) || !worlds.contains(observation.world) {
+                throw .unknownClaimObservation(observation.claim, observation.world)
+            }
+            let pair = ClaimWorldPair(claim: observation.claim, world: observation.world)
+            if !observedClaims.insert(pair).inserted {
+                throw .duplicateClaimObservation(observation.claim, observation.world)
+            }
+        }
+
         for claim in catalog.preservationClaims + catalog.detectionClaims {
             for world in catalog.worlds {
-                let found = catalog.claimObservations.contains {
-                    $0.claim == claim && $0.world == world
-                }
-                if !found {
+                if !observedClaims.contains(ClaimWorldPair(claim: claim, world: world)) {
                     throw .missingClaimObservation(claim, world)
                 }
             }
         }
 
+        var observedMutants = Set<MutantID>()
+        for observation in catalog.mutationObservations {
+            if !mutants.contains(observation.mutant) {
+                throw .unknownMutationObservation(observation.mutant)
+            }
+            if !observedMutants.insert(observation.mutant).inserted {
+                throw .duplicateMutationObservation(observation.mutant)
+            }
+        }
         for mutant in catalog.mutants {
-            if !catalog.mutationObservations.contains(where: { $0.mutant == mutant }) {
+            if !observedMutants.contains(mutant) {
                 throw .missingMutationObservation(mutant)
             }
         }
@@ -175,55 +271,35 @@ public enum AuditKernel {
         if catalog.lawObservations.isEmpty {
             throw .missingLawObservation
         }
+        var observedLaws = Set<String>()
+        for observation in catalog.lawObservations {
+            if !observedLaws.insert(observation.code).inserted {
+                throw .duplicateLawObservation(observation.code)
+            }
+        }
         if catalog.schemaObservations.isEmpty {
             throw .missingSchemaObservation
         }
-        if catalog.review.status == .pending {
-            throw .missingIndependentReview
-        }
-
-        let hasApparatusFailure = catalog.failures.contains {
-            if case .apparatus = $0 {
-                return true
-            }
-            return false
-        }
-        let hasUnsettled = catalog.failures.contains {
-            if case .clean = $0 {
-                return true
-            }
-            return false
-        } || catalog.review.status == .rejected
-        let hasGaps = catalog.failures.contains {
-            if case .mutant = $0 {
-                return true
-            }
-            return false
-        } || catalog.lawObservations.contains(where: { $0.status == .failed })
-            || catalog.schemaObservations.contains(where: { $0.status == .failed })
-
-        let verdict: Verdict
-        if hasApparatusFailure {
-            verdict = .invalid
-        } else if hasGaps && hasUnsettled {
-            verdict = .gapsAndUnsettled
-        } else if hasGaps {
-            verdict = .gaps
-        } else if hasUnsettled {
-            verdict = .unsettled
-        } else {
-            switch catalog.scope {
-            case .complete:
-                verdict = .assured
-            case .change:
-                verdict = .changeAssured
-            case .scoped:
-                verdict = .scopeAssured
+        var observedSchemas = Set<SchemaVersion>()
+        for observation in catalog.schemaObservations {
+            if !observedSchemas.insert(observation.version).inserted {
+                throw .duplicateSchemaObservation(observation.version)
             }
         }
 
-        return AuditedCatalog<Closed>(evidence: catalog, verdict: verdict, diagnostics: [])
+        let verdict = VerdictPolicy.decide(VerdictPolicy.inputs(for: catalog))
+
+        var diagnostics = catalog.coverageGaps
+        if catalog.review.status == .pending || catalog.review.evidence == nil {
+            diagnostics.append(Diagnostic(code: .reviewMissing, subject: "review", detail: "independent review absent"))
+        }
+        return AuditedCatalog<Closed>(evidence: catalog, verdict: verdict, diagnostics: diagnostics)
     }
+}
+
+private struct ClaimWorldPair: Hashable {
+    let claim: ClaimID
+    let world: WorldID
 }
 
 private func ensureUnique(_ values: [ClaimID]) throws(AuditError) {

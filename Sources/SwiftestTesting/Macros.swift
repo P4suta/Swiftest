@@ -1,58 +1,55 @@
-import Testing
+import SwiftestEngine
+import SwiftestModel
 
-@attached(peer)
+@attached(body)
 public macro WorldTest(
-    _ displayName: _const String? = nil,
-    _ traits: any TestTrait...
-) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+    worlds: WorldSpace,
+    body: @escaping @Sendable (World) async throws -> Void
+) = #externalMacro(module: "SwiftestMacros", type: "WorldTestMacro")
 
-@attached(peer)
+@attached(body)
 public macro WorldUITest(
-    _ displayName: _const String? = nil,
-    _ traits: any TestTrait...
-) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+    worlds: WorldSpace,
+    body: @escaping @Sendable (World) async throws -> Void
+) = #externalMacro(module: "SwiftestMacros", type: "WorldUITestMacro")
 
-@attached(peer)
+@attached(body)
 public macro Property(
-    _ displayName: _const String? = nil,
-    _ traits: any TestTrait...
-) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+    iterations: IterationCount,
+    seed: UInt64,
+    range: ClosedRange<Int>,
+    predicate: @escaping @Sendable (Int) -> Bool
+) = #externalMacro(module: "SwiftestMacros", type: "PropertyMacro")
+
+@attached(body)
+public macro StateMachineTest<State: Sendable, Action: Sendable>(
+    model: StateMachineModel<State, Action>,
+    depth: IterationCount
+) = #externalMacro(module: "SwiftestMacros", type: "StateMachineTestMacro")
 
 @attached(peer)
-public macro StateMachineTest(
-    _ displayName: _const String? = nil,
-    _ traits: any TestTrait...
-) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+public macro PerformanceClaim() = #externalMacro(module: "SwiftestMacros", type: "PerformanceClaimMacro")
 
 @attached(peer)
-public macro PerformanceClaim(
-    _ displayName: _const String? = nil,
-    _ traits: any TestTrait...
-) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+public macro TestDouble() = #externalMacro(module: "SwiftestMacros", type: "TestDoubleMacro")
 
-@attached(peer)
-public macro TestDouble() = #externalMacro(module: "TestingMacros", type: "PragmaMacro")
-
-@attached(peer)
-public macro ClosedDomain() = #externalMacro(module: "TestingMacros", type: "PragmaMacro")
+@attached(member, names: named(cases), named(code), named(schema), named(testSpecimens))
+public macro ClosedDomain() = #externalMacro(module: "SwiftestMacros", type: "ClosedDomainMacro")
 
 @freestanding(expression)
 public macro eventually(
-    _ condition: Bool,
-    _ comment: @autoclosure () -> Comment? = nil,
-    sourceLocation: SourceLocation = #_sourceLocation
-) = #externalMacro(module: "TestingMacros", type: "ExpectMacro")
+    attempts: IterationCount,
+    _ condition: @escaping @Sendable () async -> Bool
+) -> Void = #externalMacro(module: "SwiftestMacros", type: "EventuallyMacro")
 
 @freestanding(expression)
 public macro invariant(
-    _ condition: Bool,
-    _ comment: @autoclosure () -> Comment? = nil,
-    sourceLocation: SourceLocation = #_sourceLocation
-) = #externalMacro(module: "TestingMacros", type: "ExpectMacro")
+    observations: IterationCount,
+    _ condition: @escaping @Sendable () async -> Bool
+) -> Void = #externalMacro(module: "SwiftestMacros", type: "InvariantMacro")
 
 @freestanding(expression)
 public macro never(
-    _ condition: Bool,
-    _ comment: @autoclosure () -> Comment? = nil,
-    sourceLocation: SourceLocation = #_sourceLocation
-) = #externalMacro(module: "TestingMacros", type: "ExpectMacro")
+    observations: IterationCount,
+    _ condition: @escaping @Sendable () async -> Bool
+) -> Void = #externalMacro(module: "SwiftestMacros", type: "NeverMacro")

@@ -2,16 +2,22 @@ import SwiftestPlatform
 
 public enum FormalVerificationError: Error, Equatable, Sendable {
     case platform(PlatformError)
+    case untrustedProof(LeanTrustError)
     case oracleMismatch
 }
 
 public enum FormalVerification {
     public static func leanOracle(root: String) throws(FormalVerificationError) -> String {
+        do {
+            try LeanTrust.audit(root: root)
+        } catch let error {
+            throw .untrustedProof(error)
+        }
         let build: ProcessOutput
         do {
             build = try ProcessBoundary.run(
                 executable: "/usr/bin/env",
-                arguments: ["lake", "build"],
+                arguments: ["lake", "--wfail", "build"],
                 workingDirectory: root
             )
         } catch let error {
@@ -19,6 +25,11 @@ public enum FormalVerification {
         }
         if build.exitCode != 0 {
             throw .platform(.processExit("lake", build.exitCode, build.standardOutput))
+        }
+        do {
+            try LeanTrust.auditManifest(root: root)
+        } catch let error {
+            throw .untrustedProof(error)
         }
         do {
             return try ProcessBoundary.run(

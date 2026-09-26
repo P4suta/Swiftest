@@ -9,10 +9,10 @@ cd "$project_root"
 seal_before="$module_cache/seal-before"
 seal_after="$module_cache/seal-after"
 find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"$seal_before"
-swift build --disable-sandbox
+swift build --disable-sandbox --disable-index-store -j 4
 "$project_root/Scripts/platform-check"
-swift test --disable-sandbox
-swift run --disable-sandbox swiftest laws . --formal
+swift test --disable-sandbox --disable-index-store -j 4
+swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal
 "$project_root/Scripts/compile-fail"
 "$project_root/Scripts/mutate-laws"
 "$project_root/Scripts/formal-check"

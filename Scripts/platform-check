@@ -11,7 +11,7 @@ build_for()
     sdk_name=$1
     target_triple=$2
     sdk_path=$(xcrun --sdk "$sdk_name" --show-sdk-path)
-    swift build --disable-sandbox --target Swiftest --triple "$target_triple" --sdk "$sdk_path"
+    swift build --build-system native --disable-sandbox --disable-index-store -j 4 --target Swiftest --triple "$target_triple" --sdk "$sdk_path"
 }
 build_for macosx arm64-apple-macos14.0
 build_for iphoneos arm64-apple-ios17.0

@@ -5,39 +5,130 @@ scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-law-mutation.XXXXXX")
 trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
 copy_root="$scratch_root/source"
 mkdir -p "$copy_root"
-git -C "$project_root" archive HEAD | tar -x -C "$copy_root"
+/usr/bin/rsync -a \
+    --exclude='.git/' \
+    --exclude='.build/' \
+    --exclude='.lake/' \
+    --exclude='.swiftpm/' \
+    --exclude='DerivedData/' \
+    "$project_root/" "$copy_root/"
 scanner="$copy_root/Sources/SwiftestLaws/LawScanner.swift"
-original="$scratch_root/LawScanner.swift"
-cp "$scanner" "$original"
+manifest_graph="$copy_root/Sources/SwiftestLaws/PackageManifestGraph.swift"
+scanner_original="$scratch_root/LawScanner.swift"
+manifest_graph_original="$scratch_root/PackageManifestGraph.swift"
+cp "$scanner" "$scanner_original"
+cp "$manifest_graph" "$manifest_graph_original"
 module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
-for mutation in comment try force semantic unsafe
+killed=0
+for mutation in comment try force semantic unsafe static_state root_path resource manifest_plugin manifest_language manifest_settings manifest_platforms manifest_products macro_alias testdouble_alias license missing_target symlink
 do
-    cp "$original" "$scanner"
+    cp "$scanner_original" "$scanner"
+    cp "$manifest_graph_original" "$manifest_graph"
+    mutated_file="$scanner"
+    original_file="$scanner_original"
     case "$mutation" in
-        comment) perl -0pi -e 's/\.forbiddenComment,/\.unreadableSource,/g' "$scanner" ;;
-        try) perl -0pi -e 's/\.prohibitedTry, token:/\.forceCast, token:/g' "$scanner" ;;
-        force) perl -0pi -e 's/\.forceUnwrap, token:/\.forceCast, token:/g' "$scanner" ;;
-        semantic) perl -0pi -e 's/\.semanticDefault, token:/\.optionalBoolean, token:/g' "$scanner" ;;
-        unsafe) perl -0pi -e 's/\.unsafeOutsideBoundary, token:/\.mirror, token:/g' "$scanner" ;;
+        comment)
+            perl -0pi -e 's/\.forbiddenComment,/\.unreadableSource,/g' "$scanner"
+            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+            ;;
+        try)
+            perl -0pi -e 's/\.prohibitedTry, token:/\.forceCast, token:/g' "$scanner"
+            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+            ;;
+        force)
+            perl -0pi -e 's/\.forceUnwrap, token:/\.forceCast, token:/g' "$scanner"
+            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+            ;;
+        semantic)
+            perl -0pi -e 's/\.semanticDefault, token:/\.optionalBoolean, token:/g' "$scanner"
+            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+            ;;
+        unsafe)
+            perl -0pi -e 's/\.unsafeOutsideBoundary, token:/\.mirror, token:/g' "$scanner"
+            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+            ;;
+        static_state)
+            perl -0pi -e 's/token\.isFileScope \|\| token\.isTypeStaticVar/token.isFileScope/g' "$scanner"
+            test_filter=typeStaticMutableStateCannotBypassFileScopeRule
+            ;;
+        root_path)
+            perl -0pi -e 's/return allowedRootFiles\.contains\(path\)/return true/g' "$scanner"
+            test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
+            ;;
+        resource)
+            perl -0pi -e 's/return components\.count >= 3 && path\.hasSuffix\("\.swift"\)/return components.count >= 3/g' "$scanner"
+            test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
+            ;;
+        manifest_plugin)
+            mutated_file="$manifest_graph"
+            original_file="$manifest_graph_original"
+            perl -0pi -e 's/requiredPlugins\.subtracting\(target\.plugins\)/Set<String>()\.subtracting(target.plugins)/g' "$manifest_graph"
+            test_filter=packageManifestMustMatchTheTypedModuleGraph
+            ;;
+        manifest_language)
+            mutated_file="$manifest_graph"
+            original_file="$manifest_graph_original"
+            perl -0pi -e 's/languageModes\[0\] != normalizedTokens\("swiftLanguageModes: \[\.v6\]"\)/languageModes[0] != normalizedTokens("swiftLanguageModes: [.v6]") \&\& tokens.isEmpty/g' "$manifest_graph"
+            test_filter=packageManifestMustMatchTheTypedModuleGraph
+            ;;
+        manifest_settings)
+            mutated_file="$manifest_graph"
+            original_file="$manifest_graph_original"
+            perl -0pi -e 's/binding\(named: name, in: tokens\) != normalizedTokens\(expected\)/binding(named: name, in: tokens) != normalizedTokens(expected) \&\& tokens.isEmpty/g' "$manifest_graph"
+            test_filter=packageManifestMustMatchTheTypedModuleGraph
+            ;;
+        manifest_platforms)
+            mutated_file="$manifest_graph"
+            original_file="$manifest_graph_original"
+            perl -0pi -e 's/platforms\[0\] != normalizedTokens\(requiredPlatforms\)/platforms[0] != normalizedTokens(requiredPlatforms) \&\& tokens.isEmpty/g' "$manifest_graph"
+            test_filter=packageManifestMustMatchTheTypedModuleGraph
+            ;;
+        manifest_products)
+            mutated_file="$manifest_graph"
+            original_file="$manifest_graph_original"
+            perl -0pi -e 's/products\[0\] != normalizedTokens\(requiredProducts\)/products[0] != normalizedTokens(requiredProducts) \&\& tokens.isEmpty/g' "$manifest_graph"
+            test_filter=packageManifestMustMatchTheTypedModuleGraph
+            ;;
+        macro_alias)
+            perl -0pi -e 's/\("SwiftestMacros", "(WorldTestMacro|WorldUITestMacro|PropertyMacro|StateMachineTestMacro|PerformanceClaimMacro)"\)/("SwiftestMacros", "$1"), ("TestingMacros", "TestDeclarationMacro")/g' "$scanner"
+            test_filter=removedSwiftTestingAliasesCannotBeReintroduced
+            ;;
+        testdouble_alias)
+            perl -0pi -e 's/\("SwiftestMacros", "TestDoubleMacro"\)/("SwiftestMacros", "TestDoubleMacro"), ("TestingMacros", "PragmaMacro")/g' "$scanner"
+            test_filter=removedSwiftTestingAliasesCannotBeReintroduced
+            ;;
+        license)
+            perl -0pi -e 's/location\.line == 1 && source\.hasPrefix\(text\)/location.line <= 5/g' "$scanner"
+            test_filter=licenseAndToolDirectivesAreOnlyAllowedAsExactHeaders
+            ;;
+        missing_target)
+            perl -0pi -e 's/violations\.append\(violation\(\.unclassifiedTarget, file: relative, subject: "missing-target"\)\)/violations.append(contentsOf: [])/g' "$scanner"
+            test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
+            ;;
+        symlink)
+            perl -0pi -e 's/inventory\.violations\.append\(violation\(\.unreadableSource, file: relative, subject: kind\.rawValue\)\)/inventory.paths.append(path)/g' "$scanner"
+            test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
+            ;;
     esac
-    if cmp -s "$original" "$scanner"
+    if cmp -s "$original_file" "$mutated_file"
     then
         echo "$mutation was not applied"
         exit 1
     fi
     log_path="$scratch_root/$mutation.log"
-    if swift test --disable-sandbox --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter syntacticLawFixturesDetectOnlyIllegalForms >"$log_path" 2>&1
+    if swift test --disable-sandbox --disable-index-store -j 4 --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter "$test_filter" >"$log_path" 2>&1
     then
         echo "$mutation survived"
         exit 1
     fi
-    if rg -q "Build failed|error:" "$log_path"
+    if grep -Eq "Build failed|error:" "$log_path"
     then
         sed -n '1,200p' "$log_path"
         exit 1
     fi
+    killed=$((killed + 1))
 done
-echo "law-mutations=passed killed=5"
+echo "law-mutations=passed killed=$killed"

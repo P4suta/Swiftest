@@ -68,10 +68,19 @@ extension PropertyGenerator where Value == Int {
 }
 
 public struct PropertyShrinker<Value: Sendable>: Sendable {
+    private let measureValue: @Sendable (Value) -> UInt64
     private let shrinkValue: @Sendable (Value) -> [Value]
 
-    public init(_ shrinkValue: @escaping @Sendable (Value) -> [Value]) {
-        self.shrinkValue = shrinkValue
+    public init(
+        measure: @escaping @Sendable (Value) -> UInt64,
+        candidates: @escaping @Sendable (Value) -> [Value]
+    ) {
+        self.measureValue = measure
+        self.shrinkValue = candidates
+    }
+
+    public func measure(of value: Value) -> UInt64 {
+        measureValue(value)
     }
 
     public func candidates(for value: Value) -> [Value] {
@@ -80,16 +89,25 @@ public struct PropertyShrinker<Value: Sendable>: Sendable {
 }
 
 extension PropertyShrinker where Value == Int {
-    public static let towardZero = PropertyShrinker<Int> { value in
-        if value == 0 {
-            return []
+    public static let towardZero = PropertyShrinker<Int>(
+        measure: { value in UInt64(value.magnitude) },
+        candidates: { value in
+            if value == 0 {
+                return []
+            }
+            let half = value / 2
+            if half == 0 {
+                return [0]
+            }
+            return [0, half]
         }
-        let half = value / 2
-        if half == 0 {
-            return [0]
-        }
-        return [0, half]
-    }
+    )
+}
+
+public enum PropertyCheckError: Error, Equatable, Sendable {
+    case generation(RandomError)
+    case nonDecreasingShrinkMeasure(current: UInt64, candidate: UInt64)
+    case iteration(NumericValueError)
 }
 
 public enum PropertyResult<Value: Sendable>: Sendable {
@@ -104,17 +122,31 @@ public enum PropertyRunner {
         generator: PropertyGenerator<Value>,
         shrinker: PropertyShrinker<Value>,
         predicate: @Sendable (Value) -> Bool
-    ) throws(RandomError) -> PropertyResult<Value> {
+    ) throws(PropertyCheckError) -> PropertyResult<Value> {
         var random = DeterministicRandom(seed: seed)
         for offset in 0..<iterations.rawValue {
-            let value = try generator.generate(using: &random)
+            let value: Value
+            do {
+                value = try generator.generate(using: &random)
+            } catch let error {
+                throw .generation(error)
+            }
             if !predicate(value) {
                 var minimal = value
+                var measure = shrinker.measure(of: value)
                 var searching = true
                 while searching {
                     searching = false
                     for candidate in shrinker.candidates(for: minimal) where !predicate(candidate) {
+                        let candidateMeasure = shrinker.measure(of: candidate)
+                        if candidateMeasure >= measure {
+                            throw .nonDecreasingShrinkMeasure(
+                                current: measure,
+                                candidate: candidateMeasure
+                            )
+                        }
                         minimal = candidate
+                        measure = candidateMeasure
                         searching = true
                         break
                     }
@@ -122,8 +154,8 @@ public enum PropertyRunner {
                 let iteration: IterationCount
                 do {
                     iteration = try .positive(offset + 1)
-                } catch {
-                    throw .invalidRange
+                } catch let error {
+                    throw .iteration(error)
                 }
                 return .failed(value: minimal, iteration: iteration)
             }

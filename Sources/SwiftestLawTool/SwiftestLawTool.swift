@@ -12,7 +12,15 @@ enum LawToolFailure: Error {
 
 @main
 struct SwiftestLawTool {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            ProcessExitBoundary.fail(String(describing: error))
+        }
+    }
+
+    static func run() throws {
         let arguments = CommandLine.arguments
         if arguments.count != 3 {
             throw LawToolFailure.usage

@@ -22,29 +22,46 @@ public enum SymbolicSIL {
     ) throws(MutationError) -> SymbolicComparison {
         let left = try returnValue(original)
         let right = try returnValue(mutant)
-        if left == right {
-            return .identical
-        }
         if containsUnknown(left) || containsUnknown(right) {
             return .unknown
+        }
+        if left == right {
+            return .identical
         }
         return .different
     }
 
     private static func returnValue(_ source: String) throws(MutationError) -> SymbolicValue {
         var values: [String: SymbolicValue] = [:]
+        var result: SymbolicValue?
+        var unmodeledInstruction = false
         let lines = source.split(separator: "\n", omittingEmptySubsequences: true)
         for (lineNumber, rawLine) in lines.enumerated() {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if result != nil {
+                unmodeledInstruction = true
+                continue
+            }
             if line.hasPrefix("return ") {
-                let name = String(line.dropFirst(7))
-                return value(named: name, values: values)
+                let operands = line.split(separator: " ", omittingEmptySubsequences: true)
+                if operands.count != 2 {
+                    unmodeledInstruction = true
+                    result = .unknown("return")
+                } else {
+                    result = value(named: String(operands[1]), values: values)
+                }
+                continue
             }
             let pieces = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
             if pieces.count < 3 || pieces[1] != "=" {
+                unmodeledInstruction = true
                 continue
             }
             let target = pieces[0]
+            if values[target] != nil {
+                unmodeledInstruction = true
+                continue
+            }
             switch pieces[2] {
             case "integer_literal":
                 guard pieces.count == 4, let value = Int(pieces[3]) else {
@@ -73,10 +90,17 @@ public enum SymbolicSIL {
                     values[target] = .unknown(pieces[2])
                 }
             default:
+                unmodeledInstruction = true
                 values[target] = .unknown(pieces[2])
             }
         }
-        throw .malformedSIL(lines.count)
+        guard let result else {
+            throw .malformedSIL(lines.count)
+        }
+        if unmodeledInstruction {
+            return .unknown("unmodeled SIL")
+        }
+        return result
     }
 
     private static func value(

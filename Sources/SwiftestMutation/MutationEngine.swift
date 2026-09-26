@@ -35,6 +35,8 @@ public struct MutationCandidate: Hashable, Sendable {
 public enum MutationError: Error, Equatable, Sendable {
     case invalidIdentifier(IdentifierError)
     case invalidOffset(Int)
+    case invalidLength(Int)
+    case invalidRange(Int, Int)
     case invalidSourceEncoding
     case compiler(PlatformError)
     case malformedSIL(Int)
@@ -120,11 +122,17 @@ public enum MutationEngine {
         to source: String
     ) throws(MutationError) -> String {
         var bytes = Array(source.utf8)
-        let end = candidate.offset + candidate.length
-        if candidate.offset < 0 || end > bytes.count {
+        if candidate.offset < 0 || candidate.offset > bytes.count {
             throw .invalidOffset(candidate.offset)
         }
-        bytes.replaceSubrange(candidate.offset..<end, with: candidate.replacement.utf8)
+        if candidate.length < 0 {
+            throw .invalidLength(candidate.length)
+        }
+        let end = candidate.offset.addingReportingOverflow(candidate.length)
+        if end.overflow || end.partialValue > bytes.count {
+            throw .invalidRange(candidate.offset, candidate.length)
+        }
+        bytes.replaceSubrange(candidate.offset..<end.partialValue, with: candidate.replacement.utf8)
         guard let result = String(bytes: bytes, encoding: .utf8) else {
             throw .invalidSourceEncoding
         }

@@ -6,6 +6,7 @@ public enum SATError: Error, Equatable, Sendable {
     case variableLimit(Int)
     case incompleteCertificate(SATVariable)
     case invalidCertificate
+    case unsatisfiableProofUnavailable
 }
 
 public struct SATVariable: Hashable, Sendable, Comparable {
@@ -82,7 +83,7 @@ public struct SATCertificate: Equatable, Sendable {
 public struct UnsatisfiableCertificate: Equatable, Sendable {
     public let checkedAssignments: EvidenceCount
 
-    public init(checkedAssignments: EvidenceCount) {
+    init(checkedAssignments: EvidenceCount) {
         self.checkedAssignments = checkedAssignments
     }
 }
@@ -196,6 +197,13 @@ public enum SATSolver {
 }
 
 public enum SATProofKernel {
+    public static func verify(
+        formula: SATFormula,
+        certificate: UnsatisfiableCertificate
+    ) throws(SATError) {
+        throw .unsatisfiableProofUnavailable
+    }
+
     public static func verify(
         formula: SATFormula,
         certificate: SATCertificate

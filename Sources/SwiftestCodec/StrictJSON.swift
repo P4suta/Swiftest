@@ -12,6 +12,7 @@ public indirect enum JSONValue: Equatable, Sendable {
 
 public enum StrictJSONError: Error, Equatable, Sendable {
     case invalidUTF8
+    case resourceLimit(JSONResourceLimit)
     case unexpectedEnd(Int)
     case unexpectedByte(Int, UInt8)
     case trailingInput(Int)
@@ -31,8 +32,19 @@ public enum StrictJSONError: Error, Equatable, Sendable {
     case unknownUnionTag(String)
 }
 
+public enum JSONResourceLimit: String, CaseIterable, Sendable {
+    case bytes
+    case depth
+    case nodes
+}
+
 public enum StrictJSON {
+    private static let maximumBytes = 32_000_000
+
     public static func decode(_ data: Data) throws(StrictJSONError) -> JSONValue {
+        if data.count > maximumBytes {
+            throw .resourceLimit(.bytes)
+        }
         guard String(data: data, encoding: .utf8) != nil else {
             throw .invalidUTF8
         }
@@ -147,12 +159,16 @@ public struct JSONObjectReader {
 }
 
 private struct Parser {
+    private static let maximumDepth = 64
+    private static let maximumNodes = 200_000
+
     let bytes: [UInt8]
     var index: Int = 0
+    var nodes: Int = 0
 
     mutating func parseDocument() throws(StrictJSONError) -> JSONValue {
         skipWhitespace()
-        let value = try parseValue()
+        let value = try parseValue(depth: 0)
         skipWhitespace()
         if index != bytes.count {
             throw .trailingInput(index)
@@ -160,7 +176,11 @@ private struct Parser {
         return value
     }
 
-    mutating func parseValue() throws(StrictJSONError) -> JSONValue {
+    mutating func parseValue(depth: Int) throws(StrictJSONError) -> JSONValue {
+        if nodes >= Self.maximumNodes {
+            throw .resourceLimit(.nodes)
+        }
+        nodes += 1
         guard let byte = current else {
             throw .unexpectedEnd(index)
         }
@@ -177,9 +197,15 @@ private struct Parser {
         case 34:
             return .string(try parseString())
         case 91:
-            return .array(try parseArray())
+            if depth >= Self.maximumDepth {
+                throw .resourceLimit(.depth)
+            }
+            return .array(try parseArray(depth: depth + 1))
         case 123:
-            return .object(try parseObject())
+            if depth >= Self.maximumDepth {
+                throw .resourceLimit(.depth)
+            }
+            return .object(try parseObject(depth: depth + 1))
         case 45, 48...57:
             return .number(try parseNumber())
         default:
@@ -187,7 +213,7 @@ private struct Parser {
         }
     }
 
-    mutating func parseArray() throws(StrictJSONError) -> [JSONValue] {
+    mutating func parseArray(depth: Int) throws(StrictJSONError) -> [JSONValue] {
         try consume(91)
         skipWhitespace()
         var values: [JSONValue] = []
@@ -197,7 +223,7 @@ private struct Parser {
         }
         while true {
             skipWhitespace()
-            values.append(try parseValue())
+            values.append(try parseValue(depth: depth))
             skipWhitespace()
             guard let byte = current else {
                 throw .unexpectedEnd(index)
@@ -213,7 +239,7 @@ private struct Parser {
         }
     }
 
-    mutating func parseObject() throws(StrictJSONError) -> [String: JSONValue] {
+    mutating func parseObject(depth: Int) throws(StrictJSONError) -> [String: JSONValue] {
         try consume(123)
         skipWhitespace()
         var fields: [String: JSONValue] = [:]
@@ -237,7 +263,7 @@ private struct Parser {
             skipWhitespace()
             try consume(58)
             skipWhitespace()
-            fields[key] = try parseValue()
+            fields[key] = try parseValue(depth: depth)
             skipWhitespace()
             guard let byte = current else {
                 throw .unexpectedEnd(index)

@@ -14,6 +14,7 @@ public enum PlatformError: Error, Equatable, Sendable {
     case processLaunch(String)
     case processExit(String, Int32, String)
     case invalidOutput(String)
+    case outputExists(String)
     case unsupportedPlatform(String)
 }
 
@@ -34,7 +35,7 @@ public struct WriteCapability: ~Copyable {
 
 public enum FileSystemAuthority {
     public static func grant(root: String) throws(PlatformError) -> WriteCapability {
-        let url = URL(fileURLWithPath: root).standardizedFileURL
+        let url = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath()
         if !url.isFileURL {
             throw .invalidRoot(root)
         }
@@ -60,7 +61,7 @@ public enum FileSystemBoundary {
     }
 
     public static func read(root: String, relativePath: ArtifactPath) throws(PlatformError) -> Data {
-        let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+        let rootURL = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath()
         let destination = try authorizedURL(relativePath: relativePath, root: rootURL)
         do {
             return try Data(contentsOf: destination)
@@ -70,12 +71,26 @@ public enum FileSystemBoundary {
     }
 
     public static func entryKind(path: String) throws(PlatformError) -> FileEntryKind {
-        var isDirectory = ObjCBool(false)
-        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-        if !exists {
+        let type: FileAttributeType
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            guard let entryType = attributes[.type] as? FileAttributeType else {
+                throw PlatformError.read(path)
+            }
+            type = entryType
+        } catch {
             throw .read(path)
         }
-        return isDirectory.boolValue ? .directory : .file
+        switch type {
+        case .typeRegular:
+            return .file
+        case .typeDirectory:
+            return .directory
+        case .typeSymbolicLink:
+            return .symbolicLink
+        default:
+            return .other
+        }
     }
 
     public static func write(
@@ -105,6 +120,20 @@ public enum FileSystemBoundary {
         }
     }
 
+    public static func createSymbolicLink(
+        relativePath: ArtifactPath,
+        destination: ArtifactPath,
+        capability: consuming WriteCapability
+    ) throws(PlatformError) {
+        let link = try authorizedURL(relativePath: relativePath, root: capability.root)
+        let target = try authorizedURL(relativePath: destination, root: capability.root)
+        do {
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        } catch {
+            throw .write(link.path)
+        }
+    }
+
     public static func remove(
         relativePath: ArtifactPath,
         capability: consuming WriteCapability
@@ -118,10 +147,15 @@ public enum FileSystemBoundary {
     }
 
     static func authorizedURL(relativePath: ArtifactPath, root: URL) throws(PlatformError) -> URL {
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         let destination = root.appendingPathComponent(relativePath.rawValue).standardizedFileURL
-        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        if destination.path != root.path && !destination.path.hasPrefix(prefix) {
-            throw .pathEscapesRoot(relativePath.rawValue)
+        let prefix = canonicalRoot.path.hasSuffix("/") ? canonicalRoot.path : canonicalRoot.path + "/"
+        var resolved = canonicalRoot
+        for component in relativePath.rawValue.split(separator: "/") {
+            resolved = resolved.appendingPathComponent(String(component)).standardizedFileURL.resolvingSymlinksInPath()
+            if !resolved.path.hasPrefix(prefix) {
+                throw .pathEscapesRoot(relativePath.rawValue)
+            }
         }
         return destination
     }
@@ -146,7 +180,7 @@ public struct ScratchDirectoryOwner: ~Copyable {
     }
 
     public borrowing func issueWriteCapability() -> WriteCapability {
-        WriteCapability(root: URL(fileURLWithPath: path).standardizedFileURL)
+        WriteCapability(root: URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath())
     }
 
     deinit {

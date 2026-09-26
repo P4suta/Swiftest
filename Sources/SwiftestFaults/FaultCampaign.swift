@@ -258,6 +258,7 @@ public struct FaultScenarioObservation: Hashable, Sendable {
 }
 
 public enum FaultAuditError: Error, Equatable, Sendable {
+    case campaignMismatch
     case duplicateScenario(FaultScenarioID)
     case unknownScenario(FaultScenarioID)
     case missingScenario(FaultScenarioID)
@@ -270,6 +271,7 @@ public enum FaultAuditError: Error, Equatable, Sendable {
     case faultUnreached(FaultScenarioID, FaultPointID)
     case faultUncontrolled(FaultScenarioID, FaultPointID)
     case faultUndetected(FaultScenarioID, FaultPointID)
+    case unverifiedIrrelevance(FaultScenarioID, FaultPointID)
     case unexpectedRecovery(FaultScenarioID, FaultPointID)
     case unexpectedFailClosed(FaultScenarioID, FaultPointID)
     case digest(DigestError)
@@ -291,6 +293,16 @@ public struct AuditedFaultCampaign: Sendable {
 public enum FaultAuditKernel {
     public static func close(
         campaign: FaultCampaign,
+        transcript: FaultExecutionTranscript
+    ) throws(FaultAuditError) -> AuditedFaultCampaign {
+        if campaign.points != transcript.points || campaign.compounds != transcript.compounds {
+            throw .campaignMismatch
+        }
+        return try close(campaign: campaign, observations: transcript.observations)
+    }
+
+    static func close(
+        campaign: FaultCampaign,
         observations: [FaultScenarioObservation]
     ) throws(FaultAuditError) -> AuditedFaultCampaign {
         var scenarioByID: [FaultScenarioID: FaultScenario] = [:]
@@ -308,6 +320,21 @@ public enum FaultAuditKernel {
         }
         var injectedPointCount = 0
         var transcript: [String] = []
+        for point in campaign.points {
+            transcript.append(encodeFields([
+                "point",
+                point.id.rawValue,
+                point.domain.rawValue,
+                point.operation,
+                outcomeCode(point.outcome),
+                point.expectation.rawValue,
+            ]))
+        }
+        for compound in campaign.compounds {
+            transcript.append(encodeFields(
+                ["compound", compound.id.rawValue] + compound.points.map(\.rawValue)
+            ))
+        }
         for scenario in campaign.scenarios {
             guard let observation = observationByID[scenario.id] else {
                 throw .missingScenario(scenario.id)
@@ -393,7 +420,7 @@ public enum FaultAuditKernel {
         case .undetectedRecovered, .undetectedFailedClosed:
             throw .faultUndetected(scenario, point.id)
         case .provenIrrelevant:
-            break
+            throw .unverifiedIrrelevance(scenario, point.id)
         }
     }
 
@@ -415,18 +442,64 @@ public enum FaultAuditKernel {
             "proven-irrelevant:" + digest.rawValue
         }
     }
+
+    private static func outcomeCode(_ outcome: FaultOutcome) -> String {
+        switch outcome {
+        case .processLaunchFailure:
+            "process-launch-failure"
+        case .processExit(let code):
+            "process-exit:" + String(code)
+        case .filesystemPermissionDenied:
+            "filesystem-permission-denied"
+        case .filesystemCapacityExhausted:
+            "filesystem-capacity-exhausted"
+        case .filesystemPartialWrite:
+            "filesystem-partial-write"
+        case .codecCorruption:
+            "codec-corruption"
+        case .codecDuplicateKey:
+            "codec-duplicate-key"
+        case .storeChecksumMismatch:
+            "store-checksum-mismatch"
+        case .networkDisconnected:
+            "network-disconnected"
+        case .networkTimedOut:
+            "network-timed-out"
+        case .clockJumped:
+            "clock-jumped"
+        case .randomnessRepeated:
+            "randomness-repeated"
+        case .deviceRevoked:
+            "device-revoked"
+        case .cancellationRequested:
+            "cancellation-requested"
+        case .schedulerPreempted:
+            "scheduler-preempted"
+        case .testRunnerCrashed:
+            "test-runner-crashed"
+        }
+    }
+
+    private static func encodeFields(_ fields: [String]) -> String {
+        fields.map { field in
+            String(field.utf8.count) + ":" + field
+        }.joined()
+    }
 }
 
 public struct FaultInjector: ~Copyable {
     private let scenario: FaultScenario
     private var fired: Set<FaultPointID>
+    private var visited: Set<FaultPointID>
 
     public init(scenario: FaultScenario) {
         self.scenario = scenario
         self.fired = []
+        self.visited = []
     }
 
-    public mutating func outcome(at point: FaultPointID) -> FaultOutcome? {
+    mutating func outcome(at point: FaultPointID) -> FaultOutcome? {
+        visited.formUnion([point])
         if fired.contains(point) {
             return nil
         }
@@ -441,6 +514,10 @@ public struct FaultInjector: ~Copyable {
         scenario.activations.compactMap { point in
             fired.contains(point.id) ? nil : point.id
         }
+    }
+
+    borrowing func visited(_ point: FaultPointID) -> Bool {
+        visited.contains(point)
     }
 }
 

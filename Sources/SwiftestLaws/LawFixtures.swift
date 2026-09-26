@@ -103,9 +103,14 @@ public enum LawFixtureCatalog {
             illegal: "Sources/UnknownTarget"
         ),
         LawFixture(
+            law: .unclassifiedSource,
+            legal: "Sources/SwiftestModel/Model.swift",
+            illegal: "report.json"
+        ),
+        LawFixture(
             law: .uninspectedMacro,
-            legal: "#externalMacro(module: \"TestingMacros\", type: \"ExpectMacro\")",
-            illegal: "#externalMacro(module: \"UnknownMacros\", type: \"UnknownMacro\")"
+            legal: "@attached(body)\npublic macro WorldTest(worlds: WorldSpace, body: @escaping @Sendable (World) async throws -> Void) = #externalMacro(module: \"SwiftestMacros\", type: \"WorldTestMacro\")",
+            illegal: "@attached(body)\npublic macro WorldTest(worlds: WorldSpace, body: @escaping @Sendable (World) async throws -> Void) = #externalMacro(module: \"TestingMacros\", type: \"TestDeclarationMacro\")"
         ),
         LawFixture(
             law: .rawProcess,
@@ -119,8 +124,8 @@ public enum LawFixtureCatalog {
         ),
         LawFixture(
             law: .globalMutableState,
-            legal: "let state = State()\n",
-            illegal: "var state = State()\n"
+            legal: "enum Globals { static let state = State() }\n",
+            illegal: "enum Globals { static var state = State() }\n"
         ),
         LawFixture(
             law: .ownedExistential,

@@ -45,7 +45,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "SwiftestModel", swiftSettings: strict),
-        .target(name: "SwiftestFaults", dependencies: ["SwiftestModel"], swiftSettings: strict),
+        .target(name: "SwiftestFaults", dependencies: ["SwiftestModel"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
         .target(name: "SwiftestCodec", dependencies: ["SwiftestModel"], swiftSettings: strict),
         .target(
             name: "SwiftestPlatform",
@@ -56,18 +56,21 @@ let package = Package(
         .target(
             name: "SwiftestStore",
             dependencies: ["SwiftestCodec", "SwiftestModel", "SwiftestPlatform"],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
-        .target(name: "SwiftestSolver", dependencies: ["SwiftestModel"], swiftSettings: strict),
+        .target(name: "SwiftestSolver", dependencies: ["SwiftestModel"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
         .target(
             name: "SwiftestScheduler",
             dependencies: ["SwiftestModel", "SwiftestSolver"],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .target(
             name: "SwiftestMutation",
             dependencies: ["SwiftestModel", "SwiftestPlatform"],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .target(
             name: "SwiftestEngine",
@@ -81,10 +84,11 @@ let package = Package(
                 "SwiftestSolver",
                 "SwiftestStore",
             ],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
-        .target(name: "SwiftestDecision", dependencies: ["SwiftestModel"], swiftSettings: strict),
-        .target(name: "SwiftestScore", dependencies: ["SwiftestModel"], swiftSettings: strict),
+        .target(name: "SwiftestDecision", dependencies: ["SwiftestModel"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
+        .target(name: "SwiftestScore", dependencies: ["SwiftestModel"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
         .target(
             name: "SwiftestReport",
             dependencies: [
@@ -95,17 +99,27 @@ let package = Package(
                 "SwiftestScore",
                 "SwiftestStore",
             ],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .target(
             name: "SwiftestPresentation",
             dependencies: ["SwiftestDecision", "SwiftestModel", "SwiftestReport", "SwiftestScore"],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .target(
             name: "SwiftestTesting",
-            dependencies: ["SwiftestEngine", "SwiftestFaults", "SwiftestModel", "SwiftestPlatform"],
-            swiftSettings: strict
+            dependencies: ["SwiftestEngine", "SwiftestFaults", "SwiftestMacros", "SwiftestModel", "SwiftestPlatform"],
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
+        ),
+        .macro(
+            name: "SwiftestMacros",
+            dependencies: ["SwiftestCodec"],
+            swiftSettings: hostSwiftSyntax,
+            linkerSettings: hostSwiftSyntaxLinker,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .target(
             name: "SwiftestLaws",
@@ -130,7 +144,8 @@ let package = Package(
                 "SwiftestStore",
                 "SwiftestTesting",
             ],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .executableTarget(
             name: "SwiftestCLI",
@@ -157,8 +172,8 @@ let package = Package(
             capability: .buildTool(),
             dependencies: ["SwiftestLawTool"]
         ),
-        .testTarget(name: "SwiftestModelTests", dependencies: ["SwiftestModel"], swiftSettings: strict),
-        .testTarget(name: "SwiftestCodecTests", dependencies: ["SwiftestCodec"], swiftSettings: strict),
+        .testTarget(name: "SwiftestModelTests", dependencies: ["SwiftestModel"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
+        .testTarget(name: "SwiftestCodecTests", dependencies: ["SwiftestCodec"], swiftSettings: strict, plugins: ["SwiftestLawsPlugin"]),
         .testTarget(
             name: "SwiftestEngineTests",
             dependencies: [
@@ -169,23 +184,27 @@ let package = Package(
                 "SwiftestScheduler",
                 "SwiftestSolver",
             ],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .testTarget(
             name: "SwiftestLawsTests",
-            dependencies: ["SwiftestLaws"],
+            dependencies: ["SwiftestLaws", "SwiftestModel", "SwiftestPlatform"],
             swiftSettings: hostSwiftSyntax,
-            linkerSettings: hostSwiftSyntaxLinker
+            linkerSettings: hostSwiftSyntaxLinker,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .testTarget(
             name: "SwiftestReportTests",
             dependencies: ["SwiftestCodec", "SwiftestDecision", "SwiftestFaults", "SwiftestModel", "SwiftestReport", "SwiftestScore"],
-            swiftSettings: strict
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
         .testTarget(
             name: "SwiftestTestingTests",
-            dependencies: ["SwiftestModel", "SwiftestTesting"],
-            swiftSettings: strict
+            dependencies: ["SwiftestEngine", "SwiftestModel", "SwiftestTesting"],
+            swiftSettings: strict,
+            plugins: ["SwiftestLawsPlugin"]
         ),
     ],
     swiftLanguageModes: [.v6]

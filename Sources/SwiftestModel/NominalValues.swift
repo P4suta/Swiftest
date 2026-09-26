@@ -16,6 +16,8 @@ public enum ArtifactPathError: Error, Equatable, Sendable {
     case empty
     case absolute
     case parentTraversal
+    case selfTraversal
+    case emptySegment
     case nul
 }
 
@@ -87,6 +89,10 @@ public struct WorldID: Hashable, Sendable, CustomStringConvertible {
     public static func parse(_ value: String) throws(IdentifierError) -> WorldID {
         try validateIdentifier(value)
         return WorldID(rawValue: value)
+    }
+
+    public static func ordinal(_ value: UInt) -> WorldID {
+        WorldID(rawValue: "world-" + String(value))
     }
 
     public var description: String { rawValue }
@@ -188,6 +194,12 @@ public struct ArtifactPath: Hashable, Sendable, CustomStringConvertible {
         if segments.contains("..") {
             throw .parentTraversal
         }
+        if segments.contains(".") {
+            throw .selfTraversal
+        }
+        if segments.contains("") {
+            throw .emptySegment
+        }
         return ArtifactPath(rawValue: value)
     }
 
@@ -222,6 +234,8 @@ public struct EvidenceCount: Hashable, Sendable, Comparable {
     private init(rawValue: Int) {
         self.rawValue = rawValue
     }
+
+    public static let zero = EvidenceCount(rawValue: 0)
 
     public static func nonnegative(_ value: Int) throws(NumericValueError) -> EvidenceCount {
         if value < 0 {
@@ -259,6 +273,7 @@ public struct SchemaVersion: Hashable, Sendable, Comparable {
     }
 
     public static let v1 = SchemaVersion(rawValue: 1)
+    public static let v2 = SchemaVersion(rawValue: 2)
 
     public static func parse(_ value: Int) throws(NumericValueError) -> SchemaVersion {
         if value < 0 {

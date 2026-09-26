@@ -44,6 +44,8 @@ struct CommandDescriptor {
 enum CLIError: Error {
     case usage(String)
     case laws(Int)
+    case unassured(Verdict)
+    case unverifiableReport(Digest)
     case toolchain(String)
     case formal(String)
     case report(ReportError)
@@ -57,11 +59,21 @@ enum CLIError: Error {
     case snapshot(SnapshotError)
     case faultDeclaration(FaultDeclarationError)
     case faultAudit(FaultAuditError)
+    case outputInsideRepository(String)
+    case outputExists(String)
 }
 
 @main
 struct SwiftestCommand {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            ProcessExitBoundary.fail(String(describing: error))
+        }
+    }
+
+    static func run() throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.isEmpty || arguments == ["--help"] || arguments == ["-h"] {
             print(help(), terminator: "")
@@ -131,7 +143,8 @@ struct SwiftestCommand {
             do {
                 try FormalVerification.verifyOracle(
                     root: repository,
-                    swiftOracle: VerdictOracle.text() + FaultOracle.text()
+                    swiftOracle: VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
+                        + ArtifactPathOracle.text()
                 )
             } catch let error {
                 throw CLIError.formal(String(describing: error))
@@ -141,25 +154,102 @@ struct SwiftestCommand {
     }
 
     static func verify(_ arguments: [String]) throws {
-        let repository = root(from: arguments)
+        let options = try VerifyOptions.parse(arguments)
+        let repositoryIdentity: CanonicalDirectoryIdentity
+        do {
+            repositoryIdentity = try CanonicalPathBoundary.captureDirectoryIdentity(options.root)
+        } catch let error {
+            throw CLIError.platform(error)
+        }
+        let repository = repositoryIdentity.canonicalPath
+        let outputOwner: ExclusiveOutputOwner?
+        if let output = options.output {
+            outputOwner = try validateReportOutput(output, repository: repository)
+        } else {
+            outputOwner = nil
+        }
+        let initialSeal: Result<SourceTreeSeal, SourceTreeSealError>
+        do {
+            initialSeal = .success(try SourceTreeSeal.capture(root: repository))
+        } catch let error {
+            initialSeal = .failure(error)
+        }
         let lawReport = try LawScanner.scan(root: repository)
-        let report = try makeReport(lawReport)
+        let tests: TargetTestObservation
+        let sourceDigest: Digest?
+        do {
+            try repositoryIdentity.verifyCurrentLocation()
+            let seal = try initialSeal.get()
+            try seal.verifyUnchanged()
+            try repositoryIdentity.verifyCurrentLocation()
+            let observed: TargetTestObservation
+            switch options.target {
+            case .automatic:
+                let package = SwiftPackageTestDriver.observe(root: repository)
+                if case .notConfigured = package {
+                    observed = XcodeTargetTestDriver.unconfiguredProject(root: repository)
+                } else {
+                    observed = package
+                }
+            case .xcode(let scheme, let destination, let project, let workspace):
+                observed = XcodeTargetTestDriver.observe(
+                    root: repository,
+                    scheme: scheme,
+                    destination: destination,
+                    project: project,
+                    workspace: workspace
+                )
+            }
+            try repositoryIdentity.verifyCurrentLocation()
+            try seal.verifyUnchanged()
+            try repositoryIdentity.verifyCurrentLocation()
+            sourceDigest = try seal.manifestDigest()
+            tests = observed
+        } catch {
+            sourceDigest = nil
+            tests = .apparatus(Diagnostic(
+                code: .apparatusFailed,
+                subject: "source-integrity",
+                detail: "source or project changed during test execution"
+            ))
+        }
+        let report = try makeReport(lawReport, tests: tests, sourceDigest: sourceDigest)
         let data: Data
         do {
             data = try ReportCodec.encode(report)
         } catch let error {
             throw CLIError.report(error)
         }
-        if let output = optionValue("--output", arguments: arguments) {
-            try write(data, absolutePath: output)
+        do {
+            try repositoryIdentity.verifyCurrentLocation()
+        } catch let error {
+            throw CLIError.platform(error)
+        }
+        if let outputOwner {
+            do {
+                try outputOwner.write(data)
+            } catch let error {
+                throw outputError(error)
+            }
         } else {
             guard let text = String(data: data, encoding: .utf8) else {
                 throw CLIError.usage("report-encoding")
             }
             print(text)
         }
-        if !lawReport.passed && !arguments.contains("--allow-gaps") {
+        if report.verdict == .invalid {
+            throw CLIError.unassured(.invalid)
+        }
+        if !lawReport.passed {
             throw CLIError.laws(lawReport.violations.count)
+        }
+        if case .requireAssurance = options.gapPolicy {
+            switch report.verdict {
+            case .assured, .changeAssured, .scopeAssured:
+                break
+            case .unsettled, .gaps, .gapsAndUnsettled, .invalid:
+                throw CLIError.unassured(report.verdict)
+            }
         }
     }
 
@@ -186,7 +276,8 @@ struct SwiftestCommand {
             throw CLIError.usage("replay")
         }
         let envelope = try readEnvelope(arguments[0])
-        print("replay=" + envelope.verdict.rawValue + " run=" + envelope.run.rawValue)
+        print("replay=unverified claimed=" + envelope.verdict.rawValue + " run=" + envelope.run.rawValue)
+        throw CLIError.unverifiableReport(envelope.catalogDigest)
     }
 
     static func review(_ arguments: [String]) throws {
@@ -195,14 +286,19 @@ struct SwiftestCommand {
             return
         }
         if arguments == ["--formal-oracle"] {
-            print(VerdictOracle.text() + FaultOracle.text(), terminator: "")
+            print(
+                VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
+                    + ArtifactPathOracle.text(),
+                terminator: ""
+            )
             return
         }
         guard arguments.count == 1 else {
             throw CLIError.usage("review")
         }
         let envelope = try readEnvelope(arguments[0])
-        print("review=accepted digest=" + envelope.catalogDigest.rawValue)
+        print("review=unverified digest=" + envelope.catalogDigest.rawValue)
+        throw CLIError.unverifiableReport(envelope.catalogDigest)
     }
 
     static func doctor(_ arguments: [String]) throws {
@@ -249,11 +345,11 @@ struct SwiftestCommand {
             throw CLIError.usage("merge")
         }
         let envelopes = try arguments.map(readEnvelope)
-        let verdict = envelopes.map(\.verdict).max { severity($0) < severity($1) }
-        guard let verdict else {
+        guard let first = envelopes.first else {
             throw CLIError.usage("merge")
         }
-        print("verdict=" + verdict.rawValue + " parts=" + String(envelopes.count))
+        print("merge=unverified parts=" + String(envelopes.count))
+        throw CLIError.unverifiableReport(first.catalogDigest)
     }
 
     static func snapshot(_ arguments: [String]) throws {
@@ -337,13 +433,29 @@ struct SwiftestCommand {
         }
     }
 
-    static func makeReport(_ laws: LawReport) throws -> AssuredReport {
+    static func makeReport(
+        _ laws: LawReport,
+        tests: TargetTestObservation,
+        sourceDigest: Digest?
+    ) throws -> AssuredReport {
         let encodedViolations = laws.violations.map {
             $0.law.rawValue + ":" + $0.location.file
         }.joined(separator: "\n")
-        let reviewDigest: Digest
+        let testIdentity: String
+        if let digest = tests.resultDigest {
+            testIdentity = digest.rawValue
+        } else {
+            testIdentity = "no-test-result"
+        }
+        let sourceIdentity: String
+        if let sourceDigest {
+            sourceIdentity = sourceDigest.rawValue
+        } else {
+            sourceIdentity = "source-unverified"
+        }
+        let runDigest: Digest
         do {
-            reviewDigest = try Digest.sha256(Data(encodedViolations.utf8))
+            runDigest = try Digest.sha256(Data((sourceIdentity + "\n" + encodedViolations + "\n" + testIdentity).utf8))
         } catch let error {
             throw CLIError.digest(error)
         }
@@ -353,24 +465,48 @@ struct SwiftestCommand {
         }
         let run: RunID
         do {
-            run = try .parse("run-" + String(reviewDigest.rawValue.prefix(16)))
+            run = try .parse("run-" + runDigest.rawValue)
         } catch let error {
             throw CLIError.identifier(error)
+        }
+        let hostWorld: WorldID
+        let packageSuite: TestID
+        do {
+            hostWorld = try .parse("world-host")
+            packageSuite = try .parse("swift-package-suite")
+        } catch let error {
+            throw CLIError.identifier(error)
+        }
+        let worlds: [WorldID]
+        let failures: [ExecutionFailure]
+        switch tests {
+        case .notConfigured:
+            worlds = []
+            failures = []
+        case .passed(let count, _):
+            worlds = count.rawValue == 0 ? [] : [hostWorld]
+            failures = []
+        case .failed:
+            worlds = [hostWorld]
+            failures = [.clean(.baselineTestFailed(packageSuite, hostWorld))]
+        case .apparatus(let diagnostic):
+            worlds = []
+            failures = [.apparatus(.process(diagnostic))]
         }
         let catalog = EvidenceCatalog(
             run: run,
             scope: .complete,
             preservationClaims: [],
             detectionClaims: [],
-            worlds: [],
+            worlds: worlds,
             mutants: [],
             claimObservations: [],
             mutationObservations: [],
             lawObservations: observations,
-            schemaObservations: [SchemaObservation(version: .v1, status: .passed)],
-            failures: [],
-            review: IndependentReview(status: .accepted, evidence: reviewDigest),
-            executionCount: laws.checkedFiles
+            schemaObservations: [SchemaObservation(version: .v2, status: .passed)],
+            failures: failures,
+            review: IndependentReview(status: .pending, evidence: nil),
+            executionCount: tests.executionCount
         )
         let closed: AuditedCatalog<Closed>
         do {
@@ -378,23 +514,8 @@ struct SwiftestCommand {
         } catch let error {
             throw CLIError.audit(error)
         }
-        let faultCampaign: FaultCampaign
         do {
-            faultCampaign = try StandardFaultCampaign.make()
-        } catch let error {
-            throw CLIError.faultDeclaration(error)
-        }
-        let faultAudit: AuditedFaultCampaign
-        do {
-            faultAudit = try FaultAuditKernel.close(
-                campaign: faultCampaign,
-                observations: StandardFaultCampaign.apparatusObservations(for: faultCampaign)
-            )
-        } catch let error {
-            throw CLIError.faultAudit(error)
-        }
-        do {
-            return try AssuredReport(catalog: closed, faults: faultAudit)
+            return try AssuredReport(catalog: closed, faultEvidence: .unverified)
         } catch let error {
             throw CLIError.report(error)
         }
@@ -429,50 +550,32 @@ struct SwiftestCommand {
         }
     }
 
-    static func write(_ data: Data, absolutePath: String) throws {
-        let url = URL(fileURLWithPath: absolutePath).standardizedFileURL
-        let path: ArtifactPath
+    static func validateReportOutput(_ output: String, repository: String) throws -> ExclusiveOutputOwner {
+        let repositoryPath: String
         do {
-            path = try .parse(url.lastPathComponent)
-        } catch let error {
-            throw CLIError.path(error)
-        }
-        let capability: WriteCapability
-        do {
-            capability = try FileSystemAuthority.grant(root: url.deletingLastPathComponent().path)
+            repositoryPath = try CanonicalPathBoundary.directory(repository)
         } catch let error {
             throw CLIError.platform(error)
         }
+        let outputPath = output.hasPrefix("/")
+            ? output : WorkingDirectoryBoundary.current() + "/" + output
+        let prefix = repositoryPath.hasSuffix("/")
+            ? repositoryPath : repositoryPath + "/"
+        if outputPath == repositoryPath || outputPath.hasPrefix(prefix) {
+            throw CLIError.outputInsideRepository(outputPath)
+        }
         do {
-            try FileSystemBoundary.write(data, relativePath: path, capability: capability)
+            return try ExclusiveOutputOwner(absolutePath: outputPath)
         } catch let error {
-            throw CLIError.platform(error)
+            throw outputError(error)
         }
     }
 
-    static func optionValue(_ option: String, arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: option) else {
-            return nil
+    static func outputError(_ error: PlatformError) -> CLIError {
+        if case .outputExists(let path) = error {
+            return .outputExists(path)
         }
-        let valueIndex = index + 1
-        if valueIndex >= arguments.count {
-            return nil
-        }
-        return arguments[valueIndex]
+        return .platform(error)
     }
 
-    static func severity(_ verdict: Verdict) -> Int {
-        switch verdict {
-        case .assured, .changeAssured, .scopeAssured:
-            0
-        case .unsettled:
-            1
-        case .gaps:
-            2
-        case .gapsAndUnsettled:
-            3
-        case .invalid:
-            4
-        }
-    }
 }

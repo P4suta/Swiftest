@@ -11,15 +11,19 @@ public enum LawScanner {
         if normalizedRoot.isEmpty {
             throw .invalidRoot(root)
         }
-        let paths: [String]
-        do {
-            paths = try sourceFiles(root: normalizedRoot)
-        } catch let error {
-            throw .platform(String(describing: error))
-        }
-        var violations: [LawViolation] = []
+        let inventory = sourceFiles(root: normalizedRoot)
+        let paths = inventory.paths
+        var violations = inventory.violations
         for path in paths {
             let relative = relativePath(path, root: normalizedRoot)
+            if relative.hasSuffix(".md") || relative.hasSuffix(".markdown") {
+                violations.append(violation(.handwrittenDocumentation, file: relative, subject: "markdown"))
+                continue
+            }
+            if !shouldScan(relative) {
+                violations.append(violation(.unclassifiedSource, file: relative, subject: "file"))
+                continue
+            }
             let data: Data
             do {
                 data = try FileSystemBoundary.read(path: path)
@@ -67,12 +71,10 @@ public enum LawScanner {
         }
         let tokens = Array(tree.tokens(viewMode: .sourceAccurate))
         for token in tokens {
-            let leadingOffset = token.position.utf8Offset
+            var leadingOffset = token.position.utf8Offset
             for trivia in token.leadingTrivia {
-                guard let text = commentText(trivia) else {
-                    continue
-                }
-                if !isAllowedComment(text: text, path: path, source: source, offset: leadingOffset) {
+                if let text = commentText(trivia),
+                    !isAllowedComment(text: text, path: path, source: source, offset: leadingOffset) {
                     violations.append(violation(
                         .forbiddenComment,
                         file: path,
@@ -81,18 +83,20 @@ public enum LawScanner {
                         subject: commentKind(text)
                     ))
                 }
+                leadingOffset += trivia.sourceLength.utf8Length
             }
+            var trailingOffset = token.endPositionBeforeTrailingTrivia.utf8Offset
             for trivia in token.trailingTrivia {
-                guard let text = commentText(trivia) else {
-                    continue
+                if let text = commentText(trivia) {
+                    violations.append(violation(
+                        .forbiddenComment,
+                        file: path,
+                        source: source,
+                        offset: trailingOffset,
+                        subject: commentKind(text)
+                    ))
                 }
-                violations.append(violation(
-                    .forbiddenComment,
-                    file: path,
-                    source: source,
-                    offset: token.endPositionBeforeTrailingTrivia.utf8Offset,
-                    subject: commentKind(text)
-                ))
+                trailingOffset += trivia.sourceLength.utf8Length
             }
         }
         let records = tokens.compactMap { token -> TokenRecord? in
@@ -103,19 +107,22 @@ public enum LawScanner {
                 text: token.text,
                 offset: token.positionAfterSkippingLeadingTrivia.utf8Offset,
                 isFileScope: isFileScope(token),
+                isTypeStaticVar: isTypeStaticVar(token),
                 isForceUnwrap: token.tokenKind == .exclamationMark
             )
         }
         violations.append(contentsOf: tokenViolations(records, source: source, path: path))
+        violations.append(contentsOf: macroViolations(tokens, path: path))
         return violations
     }
 
     private static func scanFile(relativePath: String, source: String, data: Data) -> [LawViolation] {
         if relativePath.hasSuffix(".swift") {
-            return scanSwiftSource(source, path: relativePath)
-        }
-        if relativePath.hasSuffix(".md") {
-            return [violation(.handwrittenDocumentation, file: relativePath, subject: "markdown")]
+            let syntaxViolations = scanSwiftSource(source, path: relativePath)
+            if relativePath == "Package.swift" {
+                return syntaxViolations + PackageManifestGraph.violations(in: source)
+            }
+            return syntaxViolations
         }
         let flavor: SourceFlavor
         if relativePath.hasSuffix(".lean") {
@@ -125,6 +132,7 @@ public enum LawScanner {
         } else if relativePath.hasSuffix(".yml")
             || relativePath.hasSuffix(".yaml")
             || relativePath.hasSuffix(".toml")
+            || relativePath == ".gitignore"
             || relativePath.hasPrefix("Scripts/")
             || relativePath.hasPrefix(".githooks/") {
             flavor = .hash
@@ -163,6 +171,7 @@ public enum LawScanner {
         for index in tokens.indices {
             let token = tokens[index]
             let previous = index > 0 ? tokens[index - 1].text : ""
+            let beforePrevious = index > 1 ? tokens[index - 2].text : ""
             let next = index + 1 < tokens.count ? tokens[index + 1].text : ""
             let nextTwo = index + 2 < tokens.count ? tokens[index + 2].text : ""
             if token.text == "try" && (next == "?" || next == "!") {
@@ -204,7 +213,7 @@ public enum LawScanner {
             if token.text == "Task" && next == "." && nextTwo == "detached" && !platformBoundary {
                 violations.append(at(.detachedTask, token: token, source: source, path: path))
             }
-            if token.text == "var" && token.isFileScope {
+            if token.text == "var" && (token.isFileScope || token.isTypeStaticVar) {
                 violations.append(at(.globalMutableState, token: token, source: source, path: path))
             }
             if token.text == "any" && !testingBoundary && !platformBoundary && previous != "isolated" {
@@ -233,7 +242,8 @@ public enum LawScanner {
                 violations.append(at(.directRandomness, token: token, source: source, path: path))
             }
             if (token.text == "FileManager"
-                || token.text == "createDirectory"
+                || (token.text == "createDirectory"
+                    && !(beforePrevious == "FileSystemBoundary" && previous == "."))
                 || token.text == "removeItem"
                 || token.text == "moveItem"
                 || (previous == "." && token.text == "write" && next == "(" && nextTwo == "to"))
@@ -248,14 +258,74 @@ public enum LawScanner {
                 violations.append(at(.unsafeOutsideBoundary, token: token, source: source, path: path))
             }
         }
-        if containsSequence(["#", "externalMacro"], tokens: tokens) {
-            let testingMacroReference = path == "Sources/SwiftestTesting/Macros.swift"
-                && source.contains("#externalMacro(module: \"TestingMacros\"")
-            if !testingMacroReference {
-                violations.append(violation(.uninspectedMacro, file: path, subject: "external-macro"))
+        return violations
+    }
+
+    private static func macroViolations(_ tokens: [TokenSyntax], path: String) -> [LawViolation] {
+        let allowed: [String: [(module: String, type: String)]] = [
+            "WorldTest": [("SwiftestMacros", "WorldTestMacro")],
+            "WorldUITest": [("SwiftestMacros", "WorldUITestMacro")],
+            "Property": [("SwiftestMacros", "PropertyMacro")],
+            "StateMachineTest": [("SwiftestMacros", "StateMachineTestMacro")],
+            "PerformanceClaim": [("SwiftestMacros", "PerformanceClaimMacro")],
+            "TestDouble": [("SwiftestMacros", "TestDoubleMacro")],
+            "ClosedDomain": [("SwiftestMacros", "ClosedDomainMacro")],
+            "eventually": [("SwiftestMacros", "EventuallyMacro")],
+            "invariant": [("SwiftestMacros", "InvariantMacro")],
+            "never": [("SwiftestMacros", "NeverMacro")],
+        ]
+        var violations: [LawViolation] = []
+        for index in tokens.indices {
+            guard tokens[index].text == "#",
+                !isLiteralMaterial(tokens[index].tokenKind),
+                index + 1 < tokens.count,
+                tokens[index + 1].text == "externalMacro" else {
+                continue
+            }
+            let arguments = Array(tokens.dropFirst(index + 2).prefix(12)).map(\.text)
+            let module = macroArgument("module", in: arguments)
+            let type = macroArgument("type", in: arguments)
+            let declaration = containingMacroName(for: tokens[index])
+            let inspected: Bool
+            if let declaration, let implementations = allowed[declaration] {
+                inspected = implementations.contains { module == $0.module && type == $0.type }
+            } else {
+                inspected = false
+            }
+            if path != "Sources/SwiftestTesting/Macros.swift" || !inspected {
+                let subject: String
+                if let declaration {
+                    subject = declaration
+                } else {
+                    subject = "external-macro"
+                }
+                violations.append(violation(.uninspectedMacro, file: path, subject: subject))
             }
         }
         return violations
+    }
+
+    private static func containingMacroName(for token: TokenSyntax) -> String? {
+        var node = Syntax(token)
+        while let parent = node.parent {
+            if let declaration = parent.as(MacroDeclSyntax.self) {
+                return declaration.name.text
+            }
+            node = parent
+        }
+        return nil
+    }
+
+    private static func macroArgument(_ label: String, in tokens: [String]) -> String? {
+        for index in tokens.indices where tokens[index] == label {
+            if index + 4 < tokens.count,
+                tokens[index + 1] == ":",
+                tokens[index + 2] == "\"",
+                tokens[index + 4] == "\"" {
+                return tokens[index + 3]
+            }
+        }
+        return nil
     }
 
     private static func validateModuleGraph(paths: [String], root: String) -> [LawViolation] {
@@ -264,10 +334,21 @@ public enum LawScanner {
         let targetRoots = ["Sources", "Tests", "Plugins"]
         for targetRoot in targetRoots {
             let path = root + "/" + targetRoot
+            let kind: FileEntryKind
+            do {
+                kind = try FileSystemBoundary.entryKind(path: path)
+            } catch {
+                continue
+            }
+            if kind != .directory {
+                violations.append(violation(.unclassifiedTarget, file: targetRoot, subject: "not-directory"))
+                continue
+            }
             let entries: [String]
             do {
                 entries = try FileSystemBoundary.list(path: path)
             } catch {
+                violations.append(violation(.unreadableSource, file: targetRoot, subject: "list"))
                 continue
             }
             for entry in entries {
@@ -278,6 +359,28 @@ public enum LawScanner {
                         subject: entry
                     ))
                 }
+            }
+        }
+        for declaration in SwiftestModuleGraph.declarations {
+            let directory: String
+            switch declaration.role {
+            case .test:
+                directory = "Tests"
+            case .plugin:
+                directory = "Plugins"
+            case .production, .executable, .macro:
+                directory = "Sources"
+            }
+            let relative = directory + "/" + declaration.name
+            let kind: FileEntryKind
+            do {
+                kind = try FileSystemBoundary.entryKind(path: root + "/" + relative)
+            } catch {
+                violations.append(violation(.unclassifiedTarget, file: relative, subject: "missing-target"))
+                continue
+            }
+            if kind != .directory {
+                violations.append(violation(.unclassifiedTarget, file: relative, subject: "not-directory"))
             }
         }
         for path in paths where path.hasSuffix(".swift") {
@@ -292,9 +395,11 @@ public enum LawScanner {
             do {
                 data = try FileSystemBoundary.read(path: path)
             } catch {
+                violations.append(violation(.unreadableSource, file: relative, subject: "read"))
                 continue
             }
             guard let source = String(data: data, encoding: .utf8) else {
+                violations.append(violation(.unreadableSource, file: relative, subject: "utf8"))
                 continue
             }
             let imports = importedModules(source)
@@ -356,54 +461,104 @@ public enum LawScanner {
         return imports
     }
 
-    private static func sourceFiles(root: String) throws(PlatformError) -> [String] {
-        var result: [String] = []
-        try walk(path: root, result: &result)
-        return result.sorted()
+    private static func sourceFiles(root: String) -> SourceInventory {
+        var inventory = SourceInventory()
+        walk(path: root, root: root, inventory: &inventory)
+        inventory.paths.sort()
+        return inventory
     }
 
-    private static func walk(path: String, result: inout [String]) throws(PlatformError) {
-        let kind = try FileSystemBoundary.entryKind(path: path)
+    private static func walk(path: String, root: String, inventory: inout SourceInventory) {
+        let relative = relativePath(path, root: root)
+        let kind: FileEntryKind
+        do {
+            kind = try FileSystemBoundary.entryKind(path: path)
+        } catch {
+            inventory.violations.append(violation(.unreadableSource, file: relative, subject: "entry"))
+            return
+        }
         switch kind {
         case .file:
-            if shouldScan(path) {
-                result.append(path)
-            }
+            inventory.paths.append(path)
         case .directory:
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            if ignoredDirectory(name) {
+            if ignoredDirectory(relative) {
                 return
             }
-            for entry in try FileSystemBoundary.list(path: path) {
-                try walk(path: path + "/" + entry, result: &result)
+            if !relative.isEmpty && !relative.contains("/") && !allowedTopLevelDirectories.contains(relative) {
+                inventory.violations.append(violation(.unclassifiedSource, file: relative, subject: "directory"))
+            }
+            let entries: [String]
+            do {
+                entries = try FileSystemBoundary.list(path: path)
+            } catch {
+                inventory.violations.append(violation(.unreadableSource, file: relative, subject: "list"))
+                return
+            }
+            for entry in entries {
+                walk(path: path + "/" + entry, root: root, inventory: &inventory)
             }
         case .symbolicLink, .other:
-            break
+            inventory.violations.append(violation(.unreadableSource, file: relative, subject: kind.rawValue))
         }
     }
 
     private static func shouldScan(_ path: String) -> Bool {
-        let name = URL(fileURLWithPath: path).lastPathComponent
-        let extensions = ["swift", "json", "yml", "yaml", "toml", "lean"]
-        if extensions.contains(URL(fileURLWithPath: path).pathExtension) {
-            return true
+        let components = path.split(separator: "/")
+        guard let root = components.first else {
+            return false
         }
-        return name == "lean-toolchain"
-            || name == "quality"
-            || name == "formal-check"
-            || name == "compile-fail"
-            || name == "dogfood"
-            || name == "mutate-laws"
-            || name == "platform-check"
-            || path.contains("/.githooks/")
+        if components.count == 1 {
+            return allowedRootFiles.contains(path)
+        }
+        switch root {
+        case "Sources", "Tests", "Plugins":
+            return components.count >= 3 && path.hasSuffix(".swift")
+        case "SwiftestProofs":
+            return components.count == 2 && path.hasSuffix(".lean")
+        case "Scripts":
+            return components.count == 2 && allowedScripts.contains(String(components[1]))
+        case ".githooks":
+            return path == ".githooks/pre-push"
+        case ".github":
+            return components.count == 3
+                && components[1] == "workflows"
+                && (path.hasSuffix(".yml") || path.hasSuffix(".yaml"))
+        case "Fixtures":
+            guard components.count >= 4 && components[1] == "CompileFail" else {
+                return false
+            }
+            if components.count == 4 {
+                return components[3] == "Package.swift"
+            }
+            return components.count == 6
+                && components[3] == "Sources"
+                && components[4] == components[2]
+                && path.hasSuffix(".swift")
+        default:
+            return false
+        }
     }
 
-    private static func ignoredDirectory(_ name: String) -> Bool {
-        name == ".git"
-            || name == ".build"
-            || name == ".swiftpm"
-            || name == "DerivedData"
+    private static let allowedRootFiles: Set<String> = [
+        ".gitignore", "LICENSE", "Package.swift", "SwiftestProofs.lean", "lake-manifest.json",
+        "lakefile.toml", "lean-toolchain",
+    ]
+
+    private static let allowedScripts: Set<String> = [
+        "compile-fail", "dogfood", "formal-check", "mutate-laws", "platform-check", "quality",
+    ]
+
+    private static func ignoredDirectory(_ relative: String) -> Bool {
+        relative == ".git"
+            || relative == ".build"
+            || relative == ".swiftpm"
+            || relative == ".lake"
+            || relative == "DerivedData"
     }
+
+    private static let allowedTopLevelDirectories: Set<String> = [
+        ".githooks", ".github", "Fixtures", "Plugins", "Scripts", "Sources", "SwiftestProofs", "Tests",
+    ]
 
     private static func moduleName(relativePath: String) -> String? {
         let components = relativePath.split(separator: "/").map(String.init)
@@ -417,6 +572,9 @@ public enum LawScanner {
     }
 
     private static func relativePath(_ path: String, root: String) -> String {
+        if path == root {
+            return ""
+        }
         let prefix = root.hasSuffix("/") ? root : root + "/"
         if path.hasPrefix(prefix) {
             return String(path.dropFirst(prefix.count))
@@ -440,13 +598,17 @@ public enum LawScanner {
         let location = locationIn(source: source, offset: offset)
         if path.hasSuffix("Package.swift")
             && source.hasPrefix(text)
-            && text.hasPrefix("// swift-tools-version:") {
+            && text == "// swift-tools-version: 6.2" {
             return true
         }
-        if location.line <= 5
-            && (text == "// SPDX-License-Identifier: Apache-2.0"
-                || text == "// SPDX-License-Identifier: MIT") {
-            return true
+        if text == "// SPDX-License-Identifier: Apache-2.0"
+            || text == "// SPDX-License-Identifier: MIT" {
+            if location.line == 1 && source.hasPrefix(text) {
+                return true
+            }
+            return path.hasSuffix("Package.swift")
+                && location.line == 2
+                && source.hasPrefix("// swift-tools-version: 6.2\n" + text)
         }
         return false
     }
@@ -524,6 +686,22 @@ public enum LawScanner {
         return false
     }
 
+    private static func isTypeStaticVar(_ token: TokenSyntax) -> Bool {
+        guard token.text == "var" else {
+            return false
+        }
+        var node = Syntax(token)
+        while let parent = node.parent {
+            if let declaration = parent.as(VariableDeclSyntax.self) {
+                return declaration.modifiers.contains { modifier in
+                    modifier.name.text == "static" || modifier.name.text == "class"
+                }
+            }
+            node = parent
+        }
+        return false
+    }
+
     private static func at(
         _ law: LawCode,
         token: TokenRecord,
@@ -586,5 +764,11 @@ private struct TokenRecord {
     let text: String
     let offset: Int
     let isFileScope: Bool
+    let isTypeStaticVar: Bool
     let isForceUnwrap: Bool
+}
+
+private struct SourceInventory {
+    var paths: [String] = []
+    var violations: [LawViolation] = []
 }

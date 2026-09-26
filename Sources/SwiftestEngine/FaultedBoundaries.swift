@@ -1,7 +1,9 @@
 import Foundation
+import SwiftestCodec
 import SwiftestFaults
 import SwiftestModel
 import SwiftestPlatform
+import SwiftestStore
 
 public enum FaultedProcessResult: Sendable {
     case completed(ProcessOutput)
@@ -15,6 +17,16 @@ public enum FaultedReadResult: Sendable {
 
 public enum FaultedClockResult: Sendable {
     case completed(DurationNanoseconds)
+    case injected(FaultOutcome)
+}
+
+public enum FaultedDecodeResult: Sendable {
+    case completed(JSONValue)
+    case injected(FaultOutcome)
+}
+
+public enum FaultedStoreReadResult: Sendable {
+    case completed(StoredArtifact)
     case injected(FaultOutcome)
 }
 
@@ -77,6 +89,47 @@ public enum FaultedBoundaries {
         switch evaluation {
         case .completed(let duration):
             return .completed(duration)
+        case .injected(_, let outcome):
+            return .injected(outcome)
+        }
+    }
+
+    public static func decode(
+        point: FaultPointID,
+        injector: inout FaultInjector,
+        data: Data
+    ) throws(StrictJSONError) -> FaultedDecodeResult {
+        let evaluation: FaultBoundaryEvaluation<JSONValue> = try FaultInjectionBoundary.evaluate(
+            point: point,
+            injector: &injector,
+            operation: { () throws(StrictJSONError) -> JSONValue in
+                try StrictJSON.decode(data)
+            }
+        )
+        switch evaluation {
+        case .completed(let value):
+            return .completed(value)
+        case .injected(_, let outcome):
+            return .injected(outcome)
+        }
+    }
+
+    public static func storeRead(
+        point: FaultPointID,
+        injector: inout FaultInjector,
+        root: String,
+        relativePath: ArtifactPath
+    ) throws(StoreError) -> FaultedStoreReadResult {
+        let evaluation: FaultBoundaryEvaluation<StoredArtifact> = try FaultInjectionBoundary.evaluate(
+            point: point,
+            injector: &injector,
+            operation: { () throws(StoreError) -> StoredArtifact in
+                try ArtifactStore.read(root: root, relativePath: relativePath)
+            }
+        )
+        switch evaluation {
+        case .completed(let artifact):
+            return .completed(artifact)
         case .injected(_, let outcome):
             return .injected(outcome)
         }

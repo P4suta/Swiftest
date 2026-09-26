@@ -1,5 +1,6 @@
 import SwiftestProofs.Verdict
 import SwiftestProofs.Faults
+import SwiftestProofs.Path
 
 open Swiftest
 
@@ -49,5 +50,67 @@ def faultOracleLines : List String :=
       faultAcceptanceText result
     ]
 
+def boundaryReports : List (Option FaultResult) :=
+  none :: faultResults.map some
+
+def boundaryReachText : Bool → String
+  | false => "unreached"
+  | true => "reached"
+
+def boundaryReportText : Option FaultResult → String
+  | none => "missing"
+  | some result => faultResultText result
+
+def boundaryOracleLines : List String :=
+  [false, true].flatMap fun reached =>
+    boundaryReports.map fun reported =>
+      String.intercalate "\t" [
+        "fault-boundary",
+        boundaryReachText reached,
+        boundaryReportText reported,
+        if acceptedExecutedResult (recordBoundaryResult reached reported)
+          then "accepted" else "rejected"
+      ]
+
+def allVerdicts : List Verdict := [
+  .assured,
+  .changeAssured,
+  .scopeAssured,
+  .unsettled,
+  .gaps,
+  .gapsAndUnsettled,
+  .invalid
+]
+
+def faultEvidenceStates : List FaultEvidenceState := [
+  .verified,
+  .structural,
+  .unverified
+]
+
+def faultEvidenceText : FaultEvidenceState → String
+  | .verified => "verified"
+  | .structural => "structural"
+  | .unverified => "unverified"
+
+def reportOracleLines : List String :=
+  allVerdicts.flatMap fun base =>
+    faultEvidenceStates.map fun faults =>
+      String.intercalate "\t" [
+        "report",
+        verdictText base,
+        faultEvidenceText faults,
+        verdictText (reportVerdict base faults)
+      ]
+
+def pathOracleLines : List String :=
+  pathOracleCases.map fun entry =>
+    String.intercalate "\t" [
+      "path",
+      entry.1,
+      pathDecisionText (classifyPath entry.2)
+    ]
+
 def main : IO Unit :=
-  IO.print (String.intercalate "\n" (oracleLines ++ faultOracleLines) ++ "\n")
+  IO.print (String.intercalate "\n"
+    (oracleLines ++ faultOracleLines ++ boundaryOracleLines ++ reportOracleLines ++ pathOracleLines) ++ "\n")

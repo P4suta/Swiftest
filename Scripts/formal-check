@@ -8,8 +8,9 @@ mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
 cd "$project_root"
-lake build
-swift run --disable-sandbox swiftest review --formal-oracle >"$scratch_root/swift.txt"
+swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal >"$scratch_root/trust.txt"
+lake --wfail build
+swift run --disable-sandbox --disable-index-store -j 4 swiftest review --formal-oracle >"$scratch_root/swift.txt"
 lake env lean --run SwiftestProofs/Oracle.lean >"$scratch_root/lean.txt"
 cmp "$scratch_root/swift.txt" "$scratch_root/lean.txt"
 echo "formal=passed"

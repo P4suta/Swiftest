@@ -17,11 +17,20 @@ public enum Audited: Sendable {}
 public enum PipelineError: Error, Equatable, Sendable {
     case emptyCatalog
     case planNotFrozen
+    case planMismatch(PlanMismatch)
     case buildFailed(ApparatusFailure)
     case baselineFailed(CleanFailure)
     case executionFailed(ExecutionFailure)
     case recordFailed(ApparatusFailure)
     case auditFailed(AuditError)
+}
+
+public enum PlanMismatch: Equatable, Sendable {
+    case run
+    case preservationClaims
+    case detectionClaims
+    case worlds
+    case mutants
 }
 
 public struct DiscoveryCatalog: Equatable, Sendable {
@@ -131,6 +140,7 @@ extension Pipeline where State == Recorded {
                 Diagnostic(code: .missingEvidence, subject: "pipeline", detail: "recorded evidence is absent")
             ))
         }
+        try validateRecordedEvidence(payload, evidence: evidence)
         do {
             let validated = try AuditKernel.close(evidence)
             consumeValidatedCatalog(validated)
@@ -154,10 +164,35 @@ extension Pipeline where State == Audited {
                 Diagnostic(code: .missingEvidence, subject: "pipeline", detail: "audited evidence is absent")
             ))
         }
+        try validateRecordedEvidence(payload, evidence: evidence)
         do {
             return try AuditKernel.close(evidence)
         } catch let error {
             throw .auditFailed(error)
         }
+    }
+}
+
+private func validateRecordedEvidence(
+    _ payload: PipelinePayload,
+    evidence: EvidenceCatalog
+) throws(PipelineError) {
+    guard let plan = payload.plan else {
+        throw .planNotFrozen
+    }
+    if evidence.run != plan.run {
+        throw .planMismatch(.run)
+    }
+    if evidence.preservationClaims != payload.discovery.preservationClaims {
+        throw .planMismatch(.preservationClaims)
+    }
+    if evidence.detectionClaims != payload.discovery.detectionClaims {
+        throw .planMismatch(.detectionClaims)
+    }
+    if evidence.worlds != plan.worlds {
+        throw .planMismatch(.worlds)
+    }
+    if evidence.mutants != plan.mutants {
+        throw .planMismatch(.mutants)
     }
 }

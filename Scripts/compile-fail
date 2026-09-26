@@ -7,7 +7,7 @@ module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
-for fixture in InvalidTransition IDMixing ClaimPolarity CapabilityCopy
+for fixture in InvalidTransition IDMixing ClaimPolarity CapabilityCopy ClosedDomainAssociatedValue ClosedDomainConditionalCase ClosedDomainHandwrittenMember ClosedDomainEmpty ClosedDomainGeneric ClosedDomainAttributedCase ClosedDomainWrongDecl PropertyMissingTest PropertyNonemptyBody PropertyInvalidIterationType PerformanceClaimUnsupported TestDoubleUnsupported NonInterferenceProofForgery
 do
     fixture_path="$project_root/Fixtures/CompileFail/$fixture"
     log_path="$scratch_root/$fixture.log"
@@ -16,7 +16,7 @@ do
         echo "$fixture compiled unexpectedly"
         exit 1
     fi
-    if ! rg -q "error:" "$log_path"
+    if ! grep -Eq "error:" "$log_path"
     then
         sed -n '1,200p' "$log_path"
         exit 1
@@ -26,11 +26,24 @@ do
         IDMixing) expected="cannot convert value of type 'ClaimID' to expected argument type 'RunID'" ;;
         ClaimPolarity) expected="cannot convert value of type 'Claim<Detection>' to expected argument type 'Claim<Preservation>'" ;;
         CapabilityCopy) expected="borrowed and cannot be consumed" ;;
+        ClosedDomainAssociatedValue) expected="@ClosedDomain case payload has associated values" ;;
+        ClosedDomainConditionalCase) expected="@ClosedDomain does not support conditional cases" ;;
+        ClosedDomainHandwrittenMember) expected="@ClosedDomain owns member cases" ;;
+        ClosedDomainEmpty) expected="@ClosedDomain requires at least one case" ;;
+        ClosedDomainGeneric) expected="@ClosedDomain does not support generic enums" ;;
+        ClosedDomainAttributedCase) expected="@ClosedDomain does not support attributed cases" ;;
+        ClosedDomainWrongDecl) expected="@ClosedDomain requires an enum" ;;
+        PropertyMissingTest) expected="property requires @Test on a synchronous throwing function without parameters or body statements" ;;
+        PropertyNonemptyBody) expected="property requires @Test on a synchronous throwing function without parameters or body statements" ;;
+        PropertyInvalidIterationType) expected="cannot convert value of type 'Int' to expected argument type 'IterationCount'" ;;
+        PerformanceClaimUnsupported) expected="PerformanceClaim is not assured in this version" ;;
+        TestDoubleUnsupported) expected="TestDouble is not assured in this version" ;;
+        NonInterferenceProofForgery) expected="has no member 'verified'" ;;
     esac
-    if ! rg -Fq "$expected" "$log_path"
+    if ! grep -Fq "$expected" "$log_path"
     then
         sed -n '1,200p' "$log_path"
         exit 1
     fi
 done
-echo "compile-fail=passed fixtures=4"
+echo "compile-fail=passed fixtures=17"

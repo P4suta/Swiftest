@@ -19,6 +19,7 @@ public enum LawCode: String, CaseIterable, Hashable, Sendable {
     case testSupportImport = "dependency.test-support"
     case unreachableProduction = "production.test-only"
     case unclassifiedTarget = "target.unclassified"
+    case unclassifiedSource = "source.unclassified"
     case uninspectedMacro = "macro.uninspected"
     case rawProcess = "adapter.raw-process"
     case detachedTask = "adapter.detached-task"

@@ -12,19 +12,51 @@ public enum FaultAcceptance: String, Sendable {
     case rejected
 }
 
+public enum BoundaryReach: String, CaseIterable, Sendable {
+    case unreached
+    case reached
+}
+
+public enum BoundaryHandling: Sendable {
+    case missing
+    case reported(AbstractFaultResult)
+}
+
 public enum FaultOracle {
     public static func acceptance(of result: AbstractFaultResult) -> FaultAcceptance {
         switch result {
-        case .recovered, .failedClosed, .provenIrrelevant:
+        case .recovered, .failedClosed:
             .accepted
-        case .unreached, .uncontrolled, .undetected:
+        case .provenIrrelevant, .unreached, .uncontrolled, .undetected:
             .rejected
         }
     }
 
+    public static func boundaryAcceptance(
+        reach: BoundaryReach,
+        handling: BoundaryHandling
+    ) -> FaultAcceptance {
+        switch (reach, handling) {
+        case (.unreached, .missing), (.unreached, .reported), (.reached, .missing):
+            .rejected
+        case (.reached, .reported(let result)):
+            acceptance(of: result)
+        }
+    }
+
     public static func text() -> String {
-        AbstractFaultResult.allCases.map { result in
+        let results = AbstractFaultResult.allCases.map { result in
             ["fault", result.rawValue, acceptance(of: result).rawValue].joined(separator: "\t")
-        }.joined(separator: "\n") + "\n"
+        }
+        let handling: [(String, BoundaryHandling)] = [(.init("missing"), .missing)]
+            + AbstractFaultResult.allCases.map { ($0.rawValue, .reported($0)) }
+        let boundaries = BoundaryReach.allCases.flatMap { reach in
+            handling.map { label, result in
+                ["fault-boundary", reach.rawValue, label,
+                    boundaryAcceptance(reach: reach, handling: result).rawValue]
+                    .joined(separator: "\t")
+            }
+        }
+        return (results + boundaries).joined(separator: "\n") + "\n"
     }
 }

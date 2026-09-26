@@ -207,10 +207,6 @@ public struct NonInterferenceProof<Axis>: Hashable, Sendable {
     private init(certificate: Digest) {
         self.certificate = certificate
     }
-
-    public static func verified(certificate: Digest) -> NonInterferenceProof<Axis> {
-        NonInterferenceProof<Axis>(certificate: certificate)
-    }
 }
 
 public enum AxisSelection<Value: Hashable & Sendable>: Hashable, Sendable {

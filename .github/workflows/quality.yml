@@ -6,7 +6,7 @@ on:
 
 jobs:
   assurance:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v5
       - run: sudo xcode-select --switch /Applications/Xcode_27.0.app
@@ -16,5 +16,5 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: P4suta/njutest
-          path: dogfood/njutest
-      - run: Scripts/dogfood "$GITHUB_WORKSPACE/dogfood/njutest/fast-anser"
+          path: .build/dogfood/njutest
+      - run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"

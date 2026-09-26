@@ -7,7 +7,7 @@ on:
 
 jobs:
   assurance:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v5
         with:
@@ -19,6 +19,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: P4suta/njutest
-          path: dogfood/njutest
-      - run: Scripts/dogfood "$GITHUB_WORKSPACE/dogfood/njutest/fast-anser"
+          path: .build/dogfood/njutest
+      - run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"
       - run: test "${GITHUB_REF_NAME}" != "v1.0.0"
