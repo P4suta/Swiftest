@@ -1,5 +1,6 @@
 import Foundation
 @testable import SwiftestEngine
+import SwiftestPlatform
 import Testing
 
 private let minimalProject = """
@@ -112,8 +113,9 @@ func xcodeProjectRejectsSynchronizedAndVersionedSourceGroups() throws {
 
 @Test
 func xcodeProjectRejectsParentAndAbsoluteSourceReferences() throws {
-    for unsafe in ["../Shared/Feature.swift", "/private/tmp/Shared/Feature.swift",
-        ".build/Unsealed/Feature.swift"] {
+    let unsafePaths = ["../Shared/Feature.swift", "/private/tmp/Shared/Feature.swift"]
+        + SourceExcludedDirectory.allCases.map { $0.rawValue + "/Feature.swift" }
+    for unsafe in unsafePaths {
         let project = minimalProject.replacingOccurrences(of: "Sources/App.swift", with: unsafe)
         #expect(throws: XcodeInputClosureError.unsafeReference(unsafe)) {
             try XcodeInputClosure.inspectProject(Data(project.utf8))

@@ -171,7 +171,7 @@ enum XcodeInputClosure {
         }
         let relative = String(resolved.dropFirst(prefix.count))
         guard let first = relative.split(separator: "/").first,
-            !excludedSourceRoots.contains(String(first)) else {
+            !SourceExclusionPolicy.excludesDirectory(relativePath: String(first)) else {
             throw .externalContainer(path)
         }
         return resolved
@@ -344,7 +344,7 @@ enum XcodeInputClosure {
             !path.contains("%"),
             path.unicodeScalars.allSatisfy({ $0.value > 31 && $0.value != 127 }),
             components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".."
-                && !excludedSourceRoots.contains(String($0)) }) else {
+                && !SourceExclusionPolicy.excludesDirectory(relativePath: String($0)) }) else {
             throw .unsafeReference(path)
         }
     }
@@ -378,10 +378,6 @@ enum XcodeInputClosure {
     }
 
     private static let pathSettings: Set<String> = ["CODE_SIGN_ENTITLEMENTS", "INFOPLIST_FILE"]
-
-    private static let excludedSourceRoots: Set<String> = [
-        ".git", ".build", ".lake", ".swiftpm", "DerivedData",
-    ]
 
     private static let safeSettings: Set<String> = [
         "ASSETCATALOG_COMPILER_APPICON_NAME", "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME",

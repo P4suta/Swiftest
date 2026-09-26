@@ -561,7 +561,7 @@ public enum LawScanner {
         case .file:
             inventory.paths.append(path)
         case .directory:
-            if ignoredDirectory(relative) {
+            if SourceExclusionPolicy.excludesDirectory(relativePath: relative) {
                 return
             }
             if !relative.isEmpty && !relative.contains("/") && !allowedTopLevelDirectories.contains(relative) {
@@ -627,16 +627,6 @@ public enum LawScanner {
     private static let allowedScripts: Set<String> = [
         "compile-fail", "dogfood", "formal-check", "mutate-laws", "platform-check", "quality",
     ]
-
-    private static func ignoredDirectory(_ relative: String) -> Bool {
-        relative == ".git"
-            || relative == ".build"
-            || relative == ".swiftpm"
-            || relative == ".lake"
-            || relative == ".local-signing"
-            || relative == "DerivedData"
-            || relative == "dist"
-    }
 
     private static let allowedTopLevelDirectories: Set<String> = [
         ".githooks", ".github", "Fixtures", "Plugins", "Scripts", "Sources", "SwiftestProofs", "Tests",

@@ -5,9 +5,10 @@ import Testing
 
 @Test
 func generatedSourceExclusionsMatchOnlyClosedRootNames() {
-    #expect(SourceExclusionPolicy.excludesDirectory(relativePath: "dist"))
-    #expect(SourceExclusionPolicy.excludesDirectory(relativePath: ".build"))
-    #expect(!SourceExclusionPolicy.excludesDirectory(relativePath: "Sources/dist"))
+    for excluded in SourceExcludedDirectory.allCases {
+        #expect(SourceExclusionPolicy.excludesDirectory(relativePath: excluded.rawValue))
+        #expect(!SourceExclusionPolicy.excludesDirectory(relativePath: "Sources/" + excluded.rawValue))
+    }
     #expect(!SourceExclusionPolicy.excludesDirectory(relativePath: "build"))
 }
 
