@@ -1,0 +1,10 @@
+name = "swiftest"
+version = "0.1.0"
+defaultTargets = ["SwiftestProofs", "swiftest-proof-oracle"]
+
+[[lean_lib]]
+name = "SwiftestProofs"
+
+[[lean_exe]]
+name = "swiftest-proof-oracle"
+root = "SwiftestProofs.Oracle"

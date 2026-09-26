@@ -1,0 +1,7 @@
+.build/
+.lake/
+.swiftpm/
+DerivedData/
+lake-manifest.json
+*.xcresult
+.DS_Store

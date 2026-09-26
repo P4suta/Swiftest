@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-compile-fail.XXXXXX")
+trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
+module_cache="$scratch_root/module-cache"
+mkdir -p "$module_cache"
+export CLANG_MODULE_CACHE_PATH="$module_cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+for fixture in InvalidTransition IDMixing ClaimPolarity CapabilityCopy
+do
+    fixture_path="$project_root/Fixtures/CompileFail/$fixture"
+    log_path="$scratch_root/$fixture.log"
+    if swift build --disable-sandbox --package-path "$fixture_path" --scratch-path "$scratch_root/build" >"$log_path" 2>&1
+    then
+        echo "$fixture compiled unexpectedly"
+        exit 1
+    fi
+    if ! rg -q "error:" "$log_path"
+    then
+        sed -n '1,200p' "$log_path"
+        exit 1
+    fi
+    case "$fixture" in
+        InvalidTransition) expected="requires the types 'Discovered' and 'BaselinePassed' be equivalent" ;;
+        IDMixing) expected="cannot convert value of type 'ClaimID' to expected argument type 'RunID'" ;;
+        ClaimPolarity) expected="cannot convert value of type 'Claim<Detection>' to expected argument type 'Claim<Preservation>'" ;;
+        CapabilityCopy) expected="borrowed and cannot be consumed" ;;
+    esac
+    if ! rg -Fq "$expected" "$log_path"
+    then
+        sed -n '1,200p' "$log_path"
+        exit 1
+    fi
+done
+echo "compile-fail=passed fixtures=4"

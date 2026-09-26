@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-formal.XXXXXX")
+trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
+module_cache="$scratch_root/module-cache"
+mkdir -p "$module_cache"
+export CLANG_MODULE_CACHE_PATH="$module_cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+cd "$project_root"
+lake build
+swift run --disable-sandbox swiftest review --formal-oracle >"$scratch_root/swift.txt"
+lake env lean --run SwiftestProofs/Oracle.lean >"$scratch_root/lean.txt"
+cmp "$scratch_root/swift.txt" "$scratch_root/lean.txt"
+echo "formal=passed"
