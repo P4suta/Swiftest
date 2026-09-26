@@ -7,6 +7,25 @@ import SwiftestPlatform
 
 public enum LawScanner {
     public static func scan(root: String) throws(LawScannerError) -> LawReport {
+        try scan(root: root, inputClosure: .unrestricted)
+    }
+
+    public static func scan(
+        root: String,
+        declaredInputs: [String]
+    ) throws(LawScannerError) -> LawReport {
+        try scan(root: root, inputClosure: .declared(declaredInputs))
+    }
+
+    private enum InputClosure {
+        case unrestricted
+        case declared([String])
+    }
+
+    private static func scan(
+        root: String,
+        inputClosure: InputClosure
+    ) throws(LawScannerError) -> LawReport {
         let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
         if normalizedRoot.isEmpty {
             throw .invalidRoot(root)
@@ -14,6 +33,28 @@ public enum LawScanner {
         let inventory = sourceFiles(root: normalizedRoot)
         let paths = inventory.paths
         var violations = inventory.violations
+        switch inputClosure {
+        case .unrestricted:
+            break
+        case .declared(let inputs):
+            let discovered = Set(paths.map { relativePath($0, root: normalizedRoot) })
+            let declared = Set(inputs)
+            if declared.count != inputs.count {
+                violations.append(violation(
+                    .unclassifiedSource,
+                    file: "Plugins/SwiftestLawsPlugin",
+                    subject: "duplicate-plugin-input"
+                ))
+            }
+            for relative in discovered.symmetricDifference(declared).sorted() {
+                violations.append(violation(
+                    .unclassifiedSource,
+                    file: relative,
+                    subject: "plugin-input-closure"
+                ))
+            }
+        }
+        var importsByPath: [String: Set<String>] = [:]
         for path in paths {
             let relative = relativePath(path, root: normalizedRoot)
             if relative.hasSuffix(".md") || relative.hasSuffix(".markdown") {
@@ -36,8 +77,11 @@ public enum LawScanner {
                 continue
             }
             violations.append(contentsOf: scanFile(relativePath: relative, source: source, data: data))
+            if relative.hasSuffix(".swift") {
+                importsByPath[relative] = importedModules(source)
+            }
         }
-        violations.append(contentsOf: validateModuleGraph(paths: paths, root: normalizedRoot))
+        violations.append(contentsOf: validateModuleGraph(importsByPath: importsByPath, root: normalizedRoot))
         let count: EvidenceCount
         do {
             count = try .nonnegative(paths.count)
@@ -54,7 +98,10 @@ public enum LawScanner {
             if $0.location.column != $1.location.column {
                 return $0.location.column < $1.location.column
             }
-            return $0.law.rawValue < $1.law.rawValue
+            if $0.law.rawValue != $1.law.rawValue {
+                return $0.law.rawValue < $1.law.rawValue
+            }
+            return $0.subject < $1.subject
         }
         return LawReport(checkedFiles: count, violations: sorted)
     }
@@ -164,9 +211,10 @@ public enum LawScanner {
         path: String
     ) -> [LawViolation] {
         var violations: [LawViolation] = []
-        let platformBoundary = path.contains("Sources/SwiftestPlatform/")
-        let abiBoundary = path.hasSuffix(AuditedBoundary.platformABI.rawValue)
-        let testingBoundary = path.hasSuffix(AuditedBoundary.testingStableABI.rawValue)
+        let platformBoundary = path.hasPrefix("Sources/SwiftestPlatform/")
+        let abiBoundary = path == "Sources/" + AuditedBoundary.platformABI.rawValue
+        let testingBoundary = path == "Sources/" + AuditedBoundary.testingStableABI.rawValue
+        let pluginInputBoundary = path == "Plugins/SwiftestLawsPlugin/PluginInputInventory.swift"
         let hasClosedDomain = containsSequence(["@", "ClosedDomain"], tokens: tokens)
         for index in tokens.indices {
             let token = tokens[index]
@@ -241,18 +289,44 @@ public enum LawScanner {
                 && !platformBoundary {
                 violations.append(at(.directRandomness, token: token, source: source, path: path))
             }
-            if (token.text == "FileManager"
+            if ((token.text == "FileManager" && !pluginInputBoundary)
                 || (token.text == "createDirectory"
+                    && next == "("
                     && !(beforePrevious == "FileSystemBoundary" && previous == "."))
                 || token.text == "removeItem"
                 || token.text == "moveItem"
+                || token.text == "copyItem"
+                || token.text == "createFile"
+                || token.text == "replaceItem"
+                || token.text == "setAttributes"
                 || (previous == "." && token.text == "write" && next == "(" && nextTwo == "to"))
                 && !platformBoundary {
                 violations.append(at(.directFileWrite, token: token, source: source, path: path))
             }
+            if !abiBoundary && libcFilesystemSymbols.contains(token.text) {
+                violations.append(at(.directFileWrite, token: token, source: source, path: path))
+            }
+            if !abiBoundary && (token.text == "open" || token.text == "link") && next == "("
+                && previous != "func" && previous != "case" {
+                violations.append(at(.directFileWrite, token: token, source: source, path: path))
+            }
+            if !abiBoundary && token.text == "write" && next == "("
+                && previous != "func" && previous != "case"
+                && (previous != "." || beforePrevious == "Darwin" || beforePrevious == "Foundation") {
+                violations.append(at(.directFileWrite, token: token, source: source, path: path))
+            }
+            if !abiBoundary && token.text == "remove" && next == "("
+                && previous != "func" && previous != "case"
+                && (previous != "." || beforePrevious == "Darwin" || beforePrevious == "Foundation") {
+                violations.append(at(.directFileWrite, token: token, source: source, path: path))
+            }
+            if !abiBoundary && libcProcessSymbols.contains(token.text) {
+                violations.append(at(.rawProcess, token: token, source: source, path: path))
+            }
             if (token.text.hasPrefix("withUnsafe")
                 || token.text.hasPrefix("UnsafePointer")
                 || token.text == "unsafeBitCast"
+                || token.text == "_silgen_name"
                 || (token.text == "unchecked" && previous == "@"))
                 && !abiBoundary {
                 violations.append(at(.unsafeOutsideBoundary, token: token, source: source, path: path))
@@ -328,7 +402,10 @@ public enum LawScanner {
         return nil
     }
 
-    private static func validateModuleGraph(paths: [String], root: String) -> [LawViolation] {
+    private static func validateModuleGraph(
+        importsByPath: [String: Set<String>],
+        root: String
+    ) -> [LawViolation] {
         let declarations = Dictionary(uniqueKeysWithValues: SwiftestModuleGraph.declarations.map { ($0.name, $0) })
         var violations: [LawViolation] = []
         let targetRoots = ["Sources", "Tests", "Plugins"]
@@ -383,28 +460,26 @@ public enum LawScanner {
                 violations.append(violation(.unclassifiedTarget, file: relative, subject: "not-directory"))
             }
         }
-        for path in paths where path.hasSuffix(".swift") {
-            let relative = relativePath(path, root: root)
+        for relative in importsByPath.keys.sorted() {
             guard let module = moduleName(relativePath: relative) else {
                 continue
             }
             guard let declaration = declarations[module] else {
                 continue
             }
-            let data: Data
-            do {
-                data = try FileSystemBoundary.read(path: path)
-            } catch {
-                violations.append(violation(.unreadableSource, file: relative, subject: "read"))
+            guard let imports = importsByPath[relative] else {
                 continue
             }
-            guard let source = String(data: data, encoding: .utf8) else {
-                violations.append(violation(.unreadableSource, file: relative, subject: "utf8"))
-                continue
-            }
-            let imports = importedModules(source)
-            for imported in imports {
-                if SwiftestModuleGraph.systemModules.contains(imported) {
+            for imported in imports.sorted() {
+                if SwiftestModuleGraph.permitsSystemImport(
+                    imported,
+                    declaration: declaration,
+                    relativePath: relative
+                ) {
+                    continue
+                }
+                if SwiftestModuleGraph.recognizedSystemModules.contains(imported) {
+                    violations.append(violation(.reverseDependency, file: relative, subject: imported))
                     continue
                 }
                 if imported.hasSuffix("Tests") && declaration.role != .test {
@@ -455,8 +530,13 @@ public enum LawScanner {
             isLiteralMaterial(token.tokenKind) ? nil : token.text
         }
         var imports = Set<String>()
+        let selectiveKinds: Set<String> = ["typealias", "struct", "class", "enum", "protocol", "func", "var", "let"]
         for index in texts.indices where texts[index] == "import" && index + 1 < texts.count {
-            imports.insert(texts[index + 1])
+            let first = index + 1
+            let moduleIndex = selectiveKinds.contains(texts[first]) ? first + 1 : first
+            if moduleIndex < texts.count {
+                imports.insert(texts[moduleIndex])
+            }
         }
         return imports
     }
@@ -553,7 +633,9 @@ public enum LawScanner {
             || relative == ".build"
             || relative == ".swiftpm"
             || relative == ".lake"
+            || relative == ".local-signing"
             || relative == "DerivedData"
+            || relative == "dist"
     }
 
     private static let allowedTopLevelDirectories: Set<String> = [
@@ -654,6 +736,20 @@ public enum LawScanner {
         ]
         return names.contains(text)
     }
+
+    private static let libcFilesystemSymbols: Set<String> = [
+        "openat", "creat", "fopen", "freopen", "fdopen", "fwrite", "pwrite",
+        "writev", "pwritev", "unlink", "unlinkat", "rename", "renameat", "rmdir",
+        "mkdir", "mkdirat", "symlink", "symlinkat", "linkat", "truncate",
+        "ftruncate", "chmod", "chown", "fchmod", "fchown", "mknod", "mkfifo",
+        "mkstemp", "mkdtemp", "copyfile", "fcopyfile", "clonefile", "exchangedata",
+        "setxattr", "fsetxattr", "removexattr", "fremovexattr",
+    ]
+
+    private static let libcProcessSymbols: Set<String> = [
+        "system", "popen", "fork", "vfork", "posix_spawn", "posix_spawnp",
+        "execve", "execv", "execvp", "execl", "execlp",
+    ]
 
     private static func containsSequence(_ sequence: [String], tokens: [TokenRecord]) -> Bool {
         if sequence.isEmpty || tokens.count < sequence.count {

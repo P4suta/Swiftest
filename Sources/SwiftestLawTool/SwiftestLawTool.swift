@@ -22,12 +22,15 @@ struct SwiftestLawTool {
 
     static func run() throws {
         let arguments = CommandLine.arguments
-        if arguments.count != 3 {
+        if arguments.count < 3 {
             throw LawToolFailure.usage
         }
         let root = arguments[1]
         let stamp = arguments[2]
-        let report = try LawScanner.scan(root: root)
+        let report = try LawScanner.scan(
+            root: root,
+            declaredInputs: Array(arguments.dropFirst(3))
+        )
         if !report.violations.isEmpty {
             for violation in report.violations {
                 print(

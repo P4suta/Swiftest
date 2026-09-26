@@ -22,6 +22,41 @@ module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+incremental_source="$copy_root/Sources/SwiftestFaults/FaultCampaign.swift"
+incremental_original="$scratch_root/incremental-original.swift"
+incremental_log="$scratch_root/incremental-build.log"
+cp "$incremental_source" "$incremental_original"
+mkdir -p "$copy_root/dist" "$copy_root/.local-signing"
+cp "$incremental_original" "$copy_root/dist/Generated.swift"
+cp "$incremental_original" "$copy_root/.local-signing/Generated.swift"
+perl -0pi -e 's/\A/\/\/ ignored-output\n/' "$copy_root/dist/Generated.swift" "$copy_root/.local-signing/Generated.swift"
+if ! swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
+    --target SwiftestFaults >"$incremental_log" 2>&1
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+perl -0pi -e 's/\A/\/\/ gate-probe\n/' "$incremental_source"
+if swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
+    --target SwiftestFaults >"$incremental_log" 2>&1
+then
+    echo "incremental law gate survived a new violation"
+    exit 1
+fi
+if ! grep -Fq 'Sources/SwiftestFaults/FaultCampaign.swift:1:1: comment.forbidden' "$incremental_log"
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+perl -0pi -e 's/\A\/\/ gate-probe\n//' "$incremental_source"
+if ! cmp -s "$incremental_source" "$incremental_original"
+then
+    echo "incremental law fixture was not restored"
+    exit 1
+fi
+echo "incremental-law-plugin-existing-source=passed"
 killed=0
 for mutation in comment try force semantic unsafe static_state root_path resource manifest_plugin manifest_language manifest_settings manifest_platforms manifest_products macro_alias testdouble_alias license missing_target symlink
 do
@@ -119,7 +154,7 @@ do
         exit 1
     fi
     log_path="$scratch_root/$mutation.log"
-    if swift test --disable-sandbox --disable-index-store -j 4 --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter "$test_filter" >"$log_path" 2>&1
+    if swift test --disable-sandbox --disable-index-store -j 2 --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter "$test_filter" >"$log_path" 2>&1
     then
         echo "$mutation survived"
         exit 1
@@ -132,3 +167,87 @@ do
     killed=$((killed + 1))
 done
 echo "law-mutations=passed killed=$killed"
+cp "$scanner_original" "$scanner"
+cp "$manifest_graph_original" "$manifest_graph"
+if ! swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/clean-build" \
+    --product swiftest >"$incremental_log" 2>&1
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+incremental_created="$copy_root/Sources/SwiftestFaults/InsertedViolation.swift"
+cp "$incremental_original" "$incremental_created"
+perl -0pi -e 's/\A[\s\S]*\z/\/\/ gate-probe\n/' "$incremental_created"
+if ! grep -Fxq '// gate-probe' "$incremental_created"
+then
+    echo "new source violation was not inserted"
+    exit 1
+fi
+plugin_missed_new_source=0
+if swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
+    --target SwiftestFaults >"$incremental_log" 2>&1
+then
+    plugin_missed_new_source=1
+elif ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "$incremental_log"
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+cli_bin_dir=$(swift build --package-path "$copy_root" \
+    --scratch-path "$scratch_root/clean-build" --show-bin-path)
+if "$cli_bin_dir/swiftest" laws "$copy_root" >"$incremental_log" 2>&1
+then
+    echo "CLI laws survived a new source violation"
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+if ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "$incremental_log"
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+rm "$incremental_created"
+echo "cli-laws-new-target-source=passed"
+if test "$plugin_missed_new_source" -eq 1
+then
+    echo "plugin-new-target-source=GAP"
+    exit 1
+fi
+echo "plugin-new-target-source=passed"
+if ! swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
+    --target SwiftestFaults >"$incremental_log" 2>&1
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+unexpected_root_source="$copy_root/unexpected.swift"
+cp "$incremental_original" "$unexpected_root_source"
+if swift build --disable-sandbox --disable-index-store -j 2 \
+    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
+    --target SwiftestFaults >"$incremental_log" 2>&1
+then
+    echo "plugin-new-root-file=GAP"
+    exit 1
+fi
+if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "$incremental_log"
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+if "$cli_bin_dir/swiftest" laws "$copy_root" >"$incremental_log" 2>&1
+then
+    echo "CLI laws survived an unknown root file"
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "$incremental_log"
+then
+    sed -n '1,200p' "$incremental_log"
+    exit 1
+fi
+rm "$unexpected_root_source"
+echo "plugin-new-root-file=passed"
+echo "cli-laws-new-root-file=passed"

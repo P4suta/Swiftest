@@ -8,6 +8,7 @@ public enum XcodeAppTestError: Error, Equatable, Sendable {
     case summary(XCResultSummaryError)
     case coverage(XCCoverageError)
     case digest(DigestError)
+    case inputClosure(XcodeInputClosureError)
     case invalidContainer(String)
     case ambiguousContainer(String)
     case invalidScheme
@@ -121,6 +122,15 @@ public enum XcodeAppTestDriver {
         }
         if destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw .invalidDestination
+        }
+        do {
+            try XcodeInputClosure.verify(
+                container: container,
+                repositoryRoot: workingDirectory,
+                scheme: scheme
+            )
+        } catch let error {
+            throw .inputClosure(error)
         }
         let scratch: ScratchDirectoryOwner
         do {

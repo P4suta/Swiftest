@@ -200,6 +200,8 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     let report = try ArtifactPath.parse("report.json")
     let targetResource = try ArtifactPath.parse("Sources/SwiftestModel/Resources/result.json")
     let workflowOutput = try ArtifactPath.parse(".github/workflows/result.xml")
+    let distributionOutput = try ArtifactPath.parse("dist/Generated.swift")
+    let signingOutput = try ArtifactPath.parse(".local-signing/Generated.swift")
     try FileSystemBoundary.write(Data("{}".utf8), relativePath: report, capability: scratch.issueWriteCapability())
     try FileSystemBoundary.write(
         Data("{}".utf8),
@@ -211,6 +213,16 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
         relativePath: workflowOutput,
         capability: scratch.issueWriteCapability()
     )
+    try FileSystemBoundary.write(
+        Data("// generated\n".utf8),
+        relativePath: distributionOutput,
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.write(
+        Data("// generated\n".utf8),
+        relativePath: signingOutput,
+        capability: scratch.issueWriteCapability()
+    )
     let result = try LawScanner.scan(root: scratch.path)
     #expect(result.violations.contains { $0.law == .unclassifiedSource && $0.location.file == "report.json" })
     #expect(result.violations.contains {
@@ -218,6 +230,9 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     })
     #expect(result.violations.contains {
         $0.law == .unclassifiedSource && $0.location.file == ".github/workflows/result.xml"
+    })
+    #expect(!result.violations.contains {
+        $0.location.file == "dist/Generated.swift" || $0.location.file == ".local-signing/Generated.swift"
     })
 }
 
@@ -353,6 +368,167 @@ func systemCryptoKitImportDoesNotAuthorizeAnUnknownDependency() throws {
     #expect(report.violations.contains {
         $0.law == .reverseDependency && $0.subject == "UnapprovedExternal"
     })
+}
+
+@Test
+func systemImportsAreGrantedPerModuleAndDarwinOnlyToABIAdapter() throws {
+    #expect(!SwiftestModuleGraph.permitsSystemImport(
+        "Darwin",
+        declaration: ModuleDeclaration(
+            name: "SwiftestEngine",
+            dependencies: [],
+            role: .production,
+            systemImports: ["Darwin"]
+        ),
+        relativePath: "Sources/SwiftestPlatform/ABIAdapter.swift"
+    ))
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-laws-system-imports-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let model = try ArtifactPath.parse("Sources/SwiftestModel/Unsafe.swift")
+    let platform = try ArtifactPath.parse("Sources/SwiftestPlatform/Unsafe.swift")
+    let adapter = try ArtifactPath.parse("Sources/SwiftestPlatform/ABIAdapter.swift")
+    try FileSystemBoundary.write(
+        Data("import Foundation\nimport CryptoKit\nimport func Darwin.open\n".utf8),
+        relativePath: model,
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.write(
+        Data("import Darwin\n".utf8),
+        relativePath: platform,
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.write(
+        Data("import Darwin\n".utf8),
+        relativePath: adapter,
+        capability: scratch.issueWriteCapability()
+    )
+    let report = try LawScanner.scan(root: scratch.path)
+    #expect(report.violations.contains {
+        $0.law == .reverseDependency && $0.location.file == "Sources/SwiftestModel/Unsafe.swift"
+            && $0.subject == "CryptoKit"
+    })
+    #expect(report.violations.contains {
+        $0.law == .reverseDependency && $0.location.file == "Sources/SwiftestModel/Unsafe.swift"
+            && $0.subject == "Darwin"
+    })
+    #expect(report.violations.contains {
+        $0.law == .reverseDependency && $0.location.file == "Sources/SwiftestPlatform/Unsafe.swift"
+            && $0.subject == "Darwin"
+    })
+    #expect(!report.violations.contains {
+        $0.law == .reverseDependency && $0.location.file == "Sources/SwiftestPlatform/ABIAdapter.swift"
+            && $0.subject == "Darwin"
+    })
+    #expect(!report.violations.contains {
+        $0.law == .reverseDependency && $0.location.file == "Sources/SwiftestModel/Unsafe.swift"
+            && $0.subject == "Foundation"
+    })
+}
+
+@Test
+func pluginInputsMustExactlyMatchTheScannerInventory() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-laws-plugin-inputs-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let file = "Sources/SwiftestModel/Value.swift"
+    try FileSystemBoundary.write(
+        Data("public struct Value {}\n".utf8),
+        relativePath: ArtifactPath.parse(file),
+        capability: scratch.issueWriteCapability()
+    )
+    let missing = try LawScanner.scan(root: scratch.path, declaredInputs: [])
+    #expect(missing.violations.contains {
+        $0.law == .unclassifiedSource && $0.location.file == file
+            && $0.subject == "plugin-input-closure"
+    })
+    let matching = try LawScanner.scan(root: scratch.path, declaredInputs: [file])
+    #expect(!matching.violations.contains { $0.subject == "plugin-input-closure" })
+    let duplicate = try LawScanner.scan(root: scratch.path, declaredInputs: [file, file])
+    #expect(duplicate.violations.contains { $0.subject == "duplicate-plugin-input" })
+    let extra = try LawScanner.scan(root: scratch.path, declaredInputs: [file, "ghost.swift"])
+    #expect(extra.violations.contains {
+        $0.location.file == "ghost.swift" && $0.subject == "plugin-input-closure"
+    })
+}
+
+@Test
+func directLibcFilesystemAndProcessOperationsRequireABIAdapter() {
+    let illegal = [
+        "Darwin.open(\"/tmp/value\", O_WRONLY)",
+        "open(\"/tmp/value\", O_WRONLY)",
+        "fopen(\"/tmp/value\", \"w\")",
+        "unlink(\"/tmp/value\")",
+        "rename(\"/tmp/value\", \"/tmp/next\")",
+        "write(1, bytes, count)",
+        "Foundation.write(1, bytes, count)",
+        "remove(\"/tmp/value\")",
+        "Foundation.remove(\"/tmp/value\")",
+    ]
+    for source in illegal {
+        #expect(LawScanner.scanSwiftSource(source, path: "Sources/SwiftestEngine/Unsafe.swift")
+            .contains { $0.law == .directFileWrite })
+    }
+    let process = ["system(\"touch /tmp/value\")", "posix_spawn(&pid, path, nil, nil, argv, env)"]
+    for source in process {
+        #expect(LawScanner.scanSwiftSource(source, path: "Sources/SwiftestEngine/Unsafe.swift")
+            .contains { $0.law == .rawProcess })
+    }
+    let foreignSymbol = "@_silgen_name(\"unlink\") func erase(_ path: UnsafePointer<CChar>) -> Int32"
+    #expect(LawScanner.scanSwiftSource(foreignSymbol, path: "Sources/SwiftestEngine/Unsafe.swift")
+        .contains { $0.law == .unsafeOutsideBoundary && $0.subject == "_silgen_name" })
+    for source in [
+        "FileSystemBoundary.write(data, relativePath: path, capability: capability)",
+        "FileSystemBoundary.remove(relativePath: path, capability: capability)",
+    ] {
+        #expect(!LawScanner.scanSwiftSource(source, path: "Sources/SwiftestEngine/Safe.swift")
+            .contains { $0.law == .directFileWrite })
+    }
+    #expect(!LawScanner.scanSwiftSource(
+        "Darwin.open(\"/tmp/value\", O_RDONLY)",
+        path: "Sources/SwiftestPlatform/ABIAdapter.swift"
+    ).contains { $0.law == .directFileWrite })
+    #expect(!LawScanner.scanSwiftSource(
+        "switch error { case .pathEscapesRoot, .createDirectory: break; default: break }",
+        path: "Tests/SwiftestLawsTests/ResourceBoundaryTests.swift"
+    ).contains { $0.law == .directFileWrite })
+    #expect(!LawScanner.scanSwiftSource(
+        "FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)",
+        path: "Plugins/SwiftestLawsPlugin/PluginInputInventory.swift"
+    ).contains { $0.law == .directFileWrite })
+    #expect(LawScanner.scanSwiftSource(
+        "FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)",
+        path: "Plugins/SwiftestLawsPlugin/PluginInputInventory.swift"
+    ).contains { $0.law == .directFileWrite })
+    #expect(LawScanner.scanSwiftSource(
+        "FileManager.default.removeItem(at: stamp)",
+        path: "Plugins/SwiftestLawsPlugin/SwiftestLawsPlugin.swift"
+    ).contains { $0.law == .directFileWrite })
+}
+
+@Test
+func commentOnlySwiftFilesStillFailTheLaw() {
+    let path = "Sources/SwiftestFaults/InsertedViolation.swift"
+    for source in ["// gate-probe\n", "/* gate-probe */\n", "/// gate-probe\n"] {
+        #expect(LawScanner.scanSwiftSource(source, path: path).contains {
+            $0.law == .forbiddenComment && $0.location.line == 1 && $0.location.column == 1
+        })
+    }
+}
+
+@Test
+func boundaryExemptionsRequireExactSourcePaths() {
+    let forgedPlatform = "Sources/SwiftestEngine/Nested/Sources/SwiftestPlatform/Unsafe.swift"
+    let directProcess = LawScanner.scanSwiftSource("Process()", path: forgedPlatform)
+    #expect(directProcess.contains { $0.law == .rawProcess })
+    let forgedABI = "Sources/SwiftestEngine/SwiftestPlatform/ABIAdapter.swift"
+    let directUnsafe = LawScanner.scanSwiftSource("withUnsafeBytes(of: value) { body($0) }", path: forgedABI)
+    #expect(directUnsafe.contains { $0.law == .unsafeOutsideBoundary })
+    let forgedTesting = "Sources/SwiftestEngine/SwiftestTesting/Macros.swift"
+    let existential = LawScanner.scanSwiftSource("let value: any Service", path: forgedTesting)
+    #expect(existential.contains { $0.law == .ownedExistential })
 }
 
 @Test
