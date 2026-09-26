@@ -393,6 +393,7 @@ public enum LawScanner {
             || name == "formal-check"
             || name == "compile-fail"
             || name == "dogfood"
+            || name == "mutate-laws"
             || name == "platform-check"
             || path.contains("/.githooks/")
     }

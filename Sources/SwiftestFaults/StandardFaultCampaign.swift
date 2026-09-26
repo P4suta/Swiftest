@@ -41,18 +41,37 @@ public enum StandardFaultCampaign {
         for campaign: FaultCampaign
     ) -> [FaultScenarioObservation] {
         campaign.scenarios.map { scenario in
-            if scenario.kind == .clean {
-                return FaultScenarioObservation(scenario: scenario.id, result: .cleanPassed)
-            }
             var injector = FaultInjector(scenario: scenario)
             var activations: [FaultActivationObservation] = []
             for point in campaign.points {
-                if let outcome = injector.outcome(at: point.id) {
+                let evaluation: FaultBoundaryEvaluation<FaultPointID>
+                evaluation = FaultInjectionBoundary.evaluate(
+                    point: point.id,
+                    injector: &injector,
+                    operation: { point.id }
+                )
+                switch evaluation {
+                case .completed:
+                    break
+                case .injected(_, let outcome):
                     activations.append(FaultActivationObservation(
                         point: point.id,
                         result: controlledResult(for: outcome, domain: point.domain)
                     ))
                 }
+            }
+            if scenario.kind == .clean {
+                if activations.isEmpty && injector.unreachedPoints().isEmpty {
+                    return FaultScenarioObservation(scenario: scenario.id, result: .cleanPassed)
+                }
+                return FaultScenarioObservation(
+                    scenario: scenario.id,
+                    result: .cleanFailed(Diagnostic(
+                        code: .apparatusFailed,
+                        subject: scenario.id.rawValue,
+                        detail: "clean fault boundary activated"
+                    ))
+                )
             }
             for point in injector.unreachedPoints() {
                 activations.append(FaultActivationObservation(point: point, result: .unreached))

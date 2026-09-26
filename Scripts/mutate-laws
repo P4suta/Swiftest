@@ -1,0 +1,43 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-law-mutation.XXXXXX")
+trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
+copy_root="$scratch_root/source"
+mkdir -p "$copy_root"
+git -C "$project_root" archive HEAD | tar -x -C "$copy_root"
+scanner="$copy_root/Sources/SwiftestLaws/LawScanner.swift"
+original="$scratch_root/LawScanner.swift"
+cp "$scanner" "$original"
+module_cache="$scratch_root/module-cache"
+mkdir -p "$module_cache"
+export CLANG_MODULE_CACHE_PATH="$module_cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+for mutation in comment try force semantic unsafe
+do
+    cp "$original" "$scanner"
+    case "$mutation" in
+        comment) perl -0pi -e 's/\.forbiddenComment,/\.unreadableSource,/g' "$scanner" ;;
+        try) perl -0pi -e 's/\.prohibitedTry, token:/\.forceCast, token:/g' "$scanner" ;;
+        force) perl -0pi -e 's/\.forceUnwrap, token:/\.forceCast, token:/g' "$scanner" ;;
+        semantic) perl -0pi -e 's/\.semanticDefault, token:/\.optionalBoolean, token:/g' "$scanner" ;;
+        unsafe) perl -0pi -e 's/\.unsafeOutsideBoundary, token:/\.mirror, token:/g' "$scanner" ;;
+    esac
+    if cmp -s "$original" "$scanner"
+    then
+        echo "$mutation was not applied"
+        exit 1
+    fi
+    log_path="$scratch_root/$mutation.log"
+    if swift test --disable-sandbox --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter syntacticLawFixturesDetectOnlyIllegalForms >"$log_path" 2>&1
+    then
+        echo "$mutation survived"
+        exit 1
+    fi
+    if rg -q "Build failed|error:" "$log_path"
+    then
+        sed -n '1,200p' "$log_path"
+        exit 1
+    fi
+done
+echo "law-mutations=passed killed=5"

@@ -181,6 +181,35 @@ func injectorReportsEveryActivationExactlyOnce() throws {
 }
 
 @Test
+func faultBoundarySuppressesTheRealOperationAtTheInjectionPoint() throws {
+    let campaign = try StandardFaultCampaign.make()
+    guard let scenario = campaign.scenarios.first(where: {
+        $0.activations.contains(where: { $0.id.rawValue == "clock-jump" })
+    }), let point = scenario.activations.first(where: { $0.id.rawValue == "clock-jump" }) else {
+        Issue.record("clock fault scenario absent")
+        return
+    }
+    var injector = FaultInjector(scenario: scenario)
+    var operationCount = 0
+    let result = FaultInjectionBoundary.evaluate(
+        point: point.id,
+        injector: &injector,
+        operation: {
+            operationCount += 1
+            return 7
+        }
+    )
+    switch result {
+    case .completed:
+        Issue.record("faulted operation completed")
+    case .injected(let injectedPoint, let outcome):
+        #expect(injectedPoint == point.id)
+        #expect(outcome == .clockJumped)
+    }
+    #expect(operationCount == 0)
+}
+
+@Test
 func propertyRunnerShrinksFailuresDeterministically() throws {
     let iterations = try IterationCount.positive(64)
     let generator = try PropertyGenerator<Int>.integers(in: 1...100)

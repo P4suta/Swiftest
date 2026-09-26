@@ -14,6 +14,7 @@ swift build --disable-sandbox
 swift test --disable-sandbox
 swift run --disable-sandbox swiftest laws . --formal
 "$project_root/Scripts/compile-fail"
+"$project_root/Scripts/mutate-laws"
 "$project_root/Scripts/formal-check"
 "$project_root/Scripts/dogfood"
 find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"$seal_after"

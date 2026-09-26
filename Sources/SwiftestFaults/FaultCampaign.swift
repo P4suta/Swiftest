@@ -443,3 +443,32 @@ public struct FaultInjector: ~Copyable {
         }
     }
 }
+
+public enum FaultBoundaryEvaluation<Value: Sendable>: Sendable {
+    case completed(Value)
+    case injected(point: FaultPointID, outcome: FaultOutcome)
+}
+
+public enum FaultInjectionBoundary {
+    public static func evaluate<Value: Sendable>(
+        point: FaultPointID,
+        injector: inout FaultInjector,
+        operation: () -> Value
+    ) -> FaultBoundaryEvaluation<Value> {
+        if let outcome = injector.outcome(at: point) {
+            return .injected(point: point, outcome: outcome)
+        }
+        return .completed(operation())
+    }
+
+    public static func evaluate<Value: Sendable, Failure: Error>(
+        point: FaultPointID,
+        injector: inout FaultInjector,
+        operation: () throws(Failure) -> Value
+    ) throws(Failure) -> FaultBoundaryEvaluation<Value> {
+        if let outcome = injector.outcome(at: point) {
+            return .injected(point: point, outcome: outcome)
+        }
+        return .completed(try operation())
+    }
+}
