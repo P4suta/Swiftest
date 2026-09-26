@@ -289,7 +289,7 @@ public enum AuditKernel {
 
         let verdict = VerdictPolicy.decide(VerdictPolicy.inputs(for: catalog))
 
-        var diagnostics = catalog.coverageGaps
+        var diagnostics = catalog.coverageGaps + catalog.failures.map(\.diagnostic)
         if catalog.review.status == .pending || catalog.review.evidence == nil {
             diagnostics.append(Diagnostic(code: .reviewMissing, subject: "review", detail: "independent review absent"))
         }

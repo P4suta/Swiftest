@@ -141,6 +141,34 @@ public enum ExecutionFailure: Error, Equatable, Sendable {
     case clean(CleanFailure)
     case mutant(MutantFailure)
     case apparatus(ApparatusFailure)
+
+    public var diagnostic: Diagnostic {
+        switch self {
+        case .clean(.preservationViolation(let claim, let world)):
+            Diagnostic(code: .baselineFailed, subject: claim.rawValue + ":" + world.rawValue, detail: "preservation violated")
+        case .clean(.baselineTestFailed(let test, let world)):
+            Diagnostic(code: .baselineFailed, subject: test.rawValue + ":" + world.rawValue, detail: "baseline test failed")
+        case .clean(.baselineCrashed(let test, let world)):
+            Diagnostic(code: .baselineFailed, subject: test.rawValue + ":" + world.rawValue, detail: "baseline crashed")
+        case .mutant(.survived(let mutant, let claim)):
+            Diagnostic(code: .mutationSurvived, subject: mutant.rawValue + ":" + claim.rawValue, detail: "mutant survived")
+        case .mutant(.notReached(let mutant)):
+            Diagnostic(code: .mutationUnreached, subject: mutant.rawValue, detail: "mutant was not reached")
+        case .mutant(.notInfected(let mutant)):
+            Diagnostic(code: .mutationUninfected, subject: mutant.rawValue, detail: "mutant did not infect behavior")
+        case .mutant(.compilerRejected(let mutant)):
+            Diagnostic(code: .compilerRejected, subject: mutant.rawValue, detail: "compiler rejected mutant")
+        case .mutant(.equivalentWithoutProof(let mutant)):
+            Diagnostic(code: .missingEvidence, subject: mutant.rawValue, detail: "equivalence proof absent")
+        case .apparatus(.process(let diagnostic)),
+             .apparatus(.codec(let diagnostic)),
+             .apparatus(.store(let diagnostic)),
+             .apparatus(.toolchain(let diagnostic)),
+             .apparatus(.resourceOwnership(let diagnostic)),
+             .apparatus(.incompleteCatalog(let diagnostic)):
+            diagnostic
+        }
+    }
 }
 
 public enum ObservationStatus: String, CaseIterable, Sendable {

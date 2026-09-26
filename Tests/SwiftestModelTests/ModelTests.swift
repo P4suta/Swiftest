@@ -75,6 +75,13 @@ func auditSeparatesInvalidGapsAndUnsettled() throws {
         )))
     ]))
     #expect(invalid.verdict == .invalid)
+    #expect(invalid.diagnostics.contains(Diagnostic(
+        code: .apparatusFailed,
+        subject: "toolchain",
+        detail: "mismatch"
+    )))
+    #expect(gap.diagnostics.contains(where: { $0.code == .mutationUnreached }))
+    #expect(unsettled.diagnostics.contains(where: { $0.code == .baselineFailed }))
 }
 
 @Test
