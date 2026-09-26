@@ -19,14 +19,18 @@ def verifySAT (formula : Formula) (assignment : Assignment) : Bool :=
   formula.all (evalClause assignment)
 
 def Satisfies (formula : Formula) (assignment : Assignment) : Prop :=
-  verifySAT formula assignment = true
+  ∀ clause ∈ formula, ∃ literal ∈ clause, evalLiteral assignment literal = true
+
+theorem verifySATCorrect (formula : Formula) (assignment : Assignment) :
+    verifySAT formula assignment = true ↔ Satisfies formula assignment := by
+  simp [verifySAT, Satisfies, evalClause, List.all_eq_true, List.any_eq_true]
 
 theorem verifiedCertificateSound
     (formula : Formula)
     (assignment : Assignment)
     (verified : verifySAT formula assignment = true) :
     Satisfies formula assignment := by
-  exact verified
+  exact (verifySATCorrect formula assignment).mp verified
 
 theorem rejectedCertificateNotAccepted
     (formula : Formula)
@@ -34,6 +38,7 @@ theorem rejectedCertificateNotAccepted
     (rejected : verifySAT formula assignment = false) :
     ¬Satisfies formula assignment := by
   intro accepted
-  simp [Satisfies, rejected] at accepted
+  have verified := (verifySATCorrect formula assignment).mpr accepted
+  simp [rejected] at verified
 
 end Swiftest

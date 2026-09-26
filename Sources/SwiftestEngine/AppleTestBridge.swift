@@ -58,12 +58,16 @@ public enum XcodeTestDriver {
         )
     }
 
-    public static func run(_ invocation: XcodeInvocation) throws(AppleTestBridgeError) -> ProcessOutput {
+    public static func run(
+        _ invocation: XcodeInvocation,
+        scratch: borrowing ScratchDirectoryOwner
+    ) throws(AppleTestBridgeError) -> ProcessOutput {
         do {
-            return try ProcessBoundary.run(
+            return try ProcessBoundary.runPinnedApple(
                 executable: invocation.executable,
                 arguments: invocation.arguments,
-                workingDirectory: invocation.workingDirectory
+                workingDirectory: invocation.workingDirectory,
+                scratch: scratch
             )
         } catch let error {
             throw .platform(error)

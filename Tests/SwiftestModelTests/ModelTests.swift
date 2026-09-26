@@ -152,7 +152,7 @@ func emptyEvidenceCannotProduceAssuredVerdict() throws {
         mutants: [],
         claimObservations: [],
         mutationObservations: [],
-        lawObservations: [LawObservation(code: "laws", status: .passed)],
+        lawObservations: LawCode.allCases.map { LawObservation(code: $0, status: .passed) },
         schemaObservations: [SchemaObservation(version: .v2, status: .passed)],
         failures: [],
         review: IndependentReview(status: .pending, evidence: nil),
@@ -162,6 +162,37 @@ func emptyEvidenceCannotProduceAssuredVerdict() throws {
     #expect(audited.verdict == .gapsAndUnsettled)
     #expect(audited.diagnostics.contains(where: { $0.code == .reviewMissing }))
     #expect(audited.diagnostics.contains(where: { $0.subject == "tests" }))
+}
+
+@Test
+func auditRequiresEveryClosedLawExactlyOnce() throws {
+    guard let finalLaw = LawCode.allCases.last, let firstLaw = LawCode.allCases.first else {
+        Issue.record("closed law domain was empty")
+        return
+    }
+    let incomplete = try catalog(
+        failures: [],
+        lawObservations: LawCode.allCases.dropLast().map { LawObservation(code: $0, status: .passed) }
+    )
+    do {
+        let audited = try AuditKernel.close(incomplete)
+        Issue.record("missing law was accepted")
+        #expect(audited.verdict == .invalid)
+    } catch let error {
+        #expect(error == .missingLawObservation(finalLaw))
+    }
+    let repeated = try catalog(
+        failures: [],
+        lawObservations: LawCode.allCases.map { LawObservation(code: $0, status: .passed) }
+            + [LawObservation(code: firstLaw, status: .passed)]
+    )
+    do {
+        let audited = try AuditKernel.close(repeated)
+        Issue.record("duplicate law was accepted")
+        #expect(audited.verdict == .invalid)
+    } catch let error {
+        #expect(error == .duplicateLawObservation(firstLaw))
+    }
 }
 
 @Test
@@ -199,7 +230,10 @@ func unprovenClaimIrrelevanceCannotProduceAssuredVerdict() throws {
     }
 }
 
-private func catalog(failures: [ExecutionFailure]) throws -> EvidenceCatalog {
+private func catalog(
+    failures: [ExecutionFailure],
+    lawObservations: [LawObservation] = LawCode.allCases.map { LawObservation(code: $0, status: .passed) }
+) throws -> EvidenceCatalog {
     let preservation = try ClaimID.parse("preservation-1")
     let detection = try ClaimID.parse("detection-1")
     let world = try WorldID.parse("world-1")
@@ -221,7 +255,7 @@ private func catalog(failures: [ExecutionFailure]) throws -> EvidenceCatalog {
             infected: .passed,
             detected: .passed
         )],
-        lawObservations: [LawObservation(code: "laws", status: .passed)],
+        lawObservations: lawObservations,
         schemaObservations: [SchemaObservation(version: .v2, status: .passed)],
         failures: failures,
         review: IndependentReview(

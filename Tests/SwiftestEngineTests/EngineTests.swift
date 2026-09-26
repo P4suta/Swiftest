@@ -3,6 +3,7 @@ import Foundation
 @testable import SwiftestFaults
 import SwiftestModel
 import SwiftestMutation
+import SwiftestPlatform
 import SwiftestScheduler
 import SwiftestSolver
 import Testing
@@ -80,7 +81,7 @@ func satSolverCertificateIsIndependentlyChecked() throws {
         try SATProofKernel.verify(formula: formula, certificate: certificate)
     case .unsatisfiable(let certificate):
         Issue.record("unexpected unsatisfiable certificate")
-        #expect(certificate.checkedAssignments.rawValue == 0)
+        #expect(certificate.verificationDomainSize.rawValue == 0)
     }
 }
 
@@ -481,12 +482,12 @@ func faultCampaignExecutorRequiresBoundaryActivationAndObservedHandling() throws
 @Test
 func swiftTestingJSONLinesDecodesActualABIVersionAndAuditsFailures() throws {
     let stream = [
-        "{\"version\":\"6.4\",\"kind\":\"test\",\"payload\":{\"kind\":\"function\",\"name\":\"checks()\",\"sourceLocation\":{\"filePath\":\"/tmp/Checks.swift\",\"line\":1,\"column\":1},\"id\":\"Checks/checks()\",\"isParameterized\":false}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"runStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"testStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Checks/checks()\"}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"issueRecorded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[{\"symbol\":\"fail\",\"text\":\"failure\"}],\"testID\":\"Checks/checks()\",\"issue\":{\"isKnown\":false,\"severity\":\"error\",\"isFailure\":true}}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"testEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Checks/checks()\"}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"runEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"test\",\"payload\":{\"kind\":\"function\",\"name\":\"checks()\",\"sourceLocation\":{\"filePath\":\"/tmp/Checks.swift\",\"line\":1,\"column\":1},\"id\":\"Checks/checks()\",\"isParameterized\":false}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"runStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"testStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Checks/checks()\"}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"issueRecorded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[{\"symbol\":\"fail\",\"text\":\"failure\"}],\"testID\":\"Checks/checks()\",\"issue\":{\"isKnown\":false,\"severity\":\"error\",\"isFailure\":true}}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"testEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Checks/checks()\"}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"runEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
     ].joined(separator: "\n") + "\n"
     let records = try StableTestingABI.decodeStream(Data(stream.utf8))
     let summary = try StableTestingABI.summarize(records)
@@ -497,7 +498,7 @@ func swiftTestingJSONLinesDecodesActualABIVersionAndAuditsFailures() throws {
     #expect(throws: SwiftTestingStreamError.self) {
         try StableTestingABI.decodeStream(Data(stream.dropLast().utf8))
     }
-    let duplicateKey = "{\"version\":\"6.4\",\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{}}"
+    let duplicateKey = "{\"version\":\"6.4.0\",\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{}}"
     #expect(throws: SwiftTestingStreamError.self) {
         try StableTestingABI.decodeRecord(Data(duplicateKey.utf8))
     }
@@ -530,11 +531,11 @@ func swiftTestingExecutableRejectsAProcessWithoutEventEvidence() throws {
 @Test
 func swiftTestingExecutableConsumesAProcessEventStream() throws {
     let records = [
-        "{\"version\":\"6.4\",\"kind\":\"test\",\"payload\":{\"kind\":\"function\",\"name\":\"passes()\",\"sourceLocation\":{\"filePath\":\"/tmp/Passes.swift\",\"line\":1,\"column\":1},\"id\":\"Passes/passes()\",\"isParameterized\":false}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"runStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"testStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Passes/passes()\"}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"testEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Passes/passes()\"}}",
-        "{\"version\":\"6.4\",\"kind\":\"event\",\"payload\":{\"kind\":\"runEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"test\",\"payload\":{\"kind\":\"function\",\"name\":\"passes()\",\"sourceLocation\":{\"filePath\":\"/tmp/Passes.swift\",\"line\":1,\"column\":1},\"id\":\"Passes/passes()\",\"isParameterized\":false}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"runStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"testStarted\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Passes/passes()\"}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"testEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[],\"testID\":\"Passes/passes()\"}}",
+        "{\"version\":\"6.4.0\",\"kind\":\"event\",\"payload\":{\"kind\":\"runEnded\",\"instant\":{\"absolute\":1,\"since1970\":2},\"messages\":[]}}",
     ]
     let command = "printf '%s\\n' " + records.map { "'" + $0 + "'" }.joined(separator: " ") + " > \"$1\""
     let result = try SwiftTestingExecutableDriver.run(
@@ -644,10 +645,15 @@ func xcodeAppInvocationSelectsTheBuiltTestPlanAndCoverage() throws {
     } catch let error {
         #expect(error == .missingXctestrun)
     }
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-xctestrun-version-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
     do {
         try XcodeAppTestDriver.validateXctestrunVersion(
             path: #filePath,
-            workingDirectory: fixtureDirectory
+            workingDirectory: fixtureDirectory,
+            scratch: scratch
         )
         Issue.record("non-xctestrun source accepted as version 2")
     } catch let error {

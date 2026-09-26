@@ -41,17 +41,32 @@ public enum ToolchainAudit {
         root: String,
         level: VerificationLevel
     ) throws(ToolchainAuditError) -> [ToolchainObservation] {
-        let swift = try run(
+        let scratch: ScratchDirectoryOwner
+        do {
+            scratch = try ScratchDirectoryOwner(
+                parent: "/private/tmp",
+                name: "swiftest-toolchain-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+            )
+        } catch let error {
+            throw .platform(error)
+        }
+        let swift = try runApple(
             executable: "/usr/bin/xcrun",
             arguments: ["swift", "--version"],
-            root: root
+            root: root,
+            scratch: scratch
         )
-        let xcode = try run(
+        let xcode = try runApple(
             executable: "/usr/bin/xcodebuild",
             arguments: ["-version"],
-            root: root
+            root: root,
+            scratch: scratch
         )
-        let swiftSyntax = try hostSwiftSyntaxModuleVersion(root: root, swiftVersionOutput: swift)
+        let swiftSyntax = try hostSwiftSyntaxModuleVersion(
+            root: root,
+            swiftVersionOutput: swift,
+            scratch: scratch
+        )
         var observations = [
             observation(component: "Swift", expected: swiftVersion, actual: swift),
             observation(component: "Xcode", expected: xcodeVersion, actual: xcode),
@@ -63,7 +78,7 @@ public enum ToolchainAudit {
             ),
         ]
         if level == .formal {
-            let lean = try run(
+            let lean = try runLean(
                 executable: "/usr/bin/env",
                 arguments: ["lean", "--version"],
                 root: root
@@ -75,12 +90,14 @@ public enum ToolchainAudit {
 
     private static func hostSwiftSyntaxModuleVersion(
         root: String,
-        swiftVersionOutput: String
+        swiftVersionOutput: String,
+        scratch: borrowing ScratchDirectoryOwner
     ) throws(ToolchainAuditError) -> String {
-        let executable = try run(
+        let executable = try runApple(
             executable: "/usr/bin/xcrun",
             arguments: ["--find", "swift"],
-            root: root
+            root: root,
+            scratch: scratch
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         if executable.isEmpty {
             throw .swiftSyntaxMetadata("swift-executable")
@@ -124,7 +141,25 @@ public enum ToolchainAudit {
         return String(version)
     }
 
-    private static func run(
+    private static func runApple(
+        executable: String,
+        arguments: [String],
+        root: String,
+        scratch: borrowing ScratchDirectoryOwner
+    ) throws(ToolchainAuditError) -> String {
+        do {
+            return try ProcessBoundary.runPinnedApple(
+                executable: executable,
+                arguments: arguments,
+                workingDirectory: root,
+                scratch: scratch
+            ).standardOutput
+        } catch let error {
+            throw .platform(error)
+        }
+    }
+
+    private static func runLean(
         executable: String,
         arguments: [String],
         root: String
@@ -154,7 +189,20 @@ public enum ToolchainAudit {
     }
 
     private static func version(component: String, in output: String) -> String? {
-        guard let firstLine = output.split(separator: "\n", omittingEmptySubsequences: false).first else {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+        let candidates = lines.filter { line in
+            switch component {
+            case "Swift":
+                return line.hasPrefix("Apple Swift version ") || line.hasPrefix("swift-driver version: ")
+            case "Xcode":
+                return line.hasPrefix("Xcode ")
+            case "Lean":
+                return line.hasPrefix("Lean (version ")
+            default:
+                return false
+            }
+        }
+        guard candidates.count == 1, let firstLine = candidates.first else {
             return nil
         }
         let suffix: Substring

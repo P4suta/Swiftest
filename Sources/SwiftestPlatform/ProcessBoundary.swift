@@ -15,11 +15,17 @@ public struct ProcessOwner: ~Copyable {
     private let process: Process
     private let output: Pipe
 
-    init(executable: String, arguments: [String], workingDirectory: String?) {
+    init(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String]
+    ) {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = environment
         if let workingDirectory {
             process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
         }
@@ -59,7 +65,12 @@ public struct ProcessOwner: ~Copyable {
 public struct ProcessOwner: ~Copyable {
     private let executable: String
 
-    init(executable: String, arguments: [String], workingDirectory: String?) {
+    init(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String]
+    ) {
         self.executable = executable
     }
 
@@ -75,10 +86,63 @@ public enum ProcessBoundary {
         arguments: [String],
         workingDirectory: String?
     ) throws(PlatformError) -> ProcessOutput {
+        try launch(
+            executable: executable,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    public static func runPinnedApple(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String,
+        scratch: borrowing ScratchDirectoryOwner
+    ) throws(PlatformError) -> ProcessOutput {
+        let temporary = scratch.path + "/temporary"
+        let moduleCache = scratch.path + "/module-cache"
+        do {
+            try FileManager.default.createDirectory(atPath: temporary, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: moduleCache, withIntermediateDirectories: true)
+        } catch {
+            throw .createDirectory(scratch.path)
+        }
+        let canonicalScratch = try CanonicalPathBoundary.directory(scratch.path)
+        let canonicalTemporary = try CanonicalPathBoundary.directory(temporary)
+        let canonicalModuleCache = try CanonicalPathBoundary.directory(moduleCache)
+        guard canonicalTemporary == canonicalScratch + "/temporary",
+            canonicalModuleCache == canonicalScratch + "/module-cache" else {
+            throw .pathEscapesRoot(scratch.path)
+        }
+        return try launch(
+            executable: executable,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: [
+                "CLANG_MODULE_CACHE_PATH": moduleCache,
+                "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+                "HOME": scratch.path,
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin",
+                "SWIFTPM_MODULECACHE_OVERRIDE": moduleCache,
+                "TMPDIR": temporary,
+            ]
+        )
+    }
+
+    private static func launch(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String]
+    ) throws(PlatformError) -> ProcessOutput {
         let owner = ProcessOwner(
             executable: executable,
             arguments: arguments,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            environment: environment
         )
         let output = try owner.run()
         if output.exitCode != 0 {

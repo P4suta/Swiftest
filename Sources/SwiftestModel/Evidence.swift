@@ -55,10 +55,10 @@ public struct MutationObservation: Equatable, Sendable {
 }
 
 public struct LawObservation: Equatable, Sendable {
-    public let code: String
+    public let code: LawCode
     public let status: ObservationStatus
 
-    public init(code: String, status: ObservationStatus) {
+    public init(code: LawCode, status: ObservationStatus) {
         self.code = code
         self.status = status
     }
@@ -217,9 +217,9 @@ public enum AuditError: Error, Equatable, Sendable {
     case unknownMutationObservation(MutantID)
     case duplicateMutationObservation(MutantID)
     case missingMutationObservation(MutantID)
-    case duplicateLawObservation(String)
+    case duplicateLawObservation(LawCode)
     case duplicateSchemaObservation(SchemaVersion)
-    case missingLawObservation
+    case missingLawObservation(LawCode)
     case missingSchemaObservation
 }
 
@@ -268,14 +268,14 @@ public enum AuditKernel {
             }
         }
 
-        if catalog.lawObservations.isEmpty {
-            throw .missingLawObservation
-        }
-        var observedLaws = Set<String>()
+        var observedLaws = Set<LawCode>()
         for observation in catalog.lawObservations {
             if !observedLaws.insert(observation.code).inserted {
                 throw .duplicateLawObservation(observation.code)
             }
+        }
+        for law in LawCode.allCases where !observedLaws.contains(law) {
+            throw .missingLawObservation(law)
         }
         if catalog.schemaObservations.isEmpty {
             throw .missingSchemaObservation

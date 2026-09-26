@@ -25,6 +25,18 @@ public enum FileEntryKind: String, CaseIterable, Sendable {
     case other
 }
 
+public struct FileMode: Equatable, Sendable {
+    public let rawValue: UInt16
+
+    private init(rawValue: UInt16) {
+        self.rawValue = rawValue
+    }
+
+    static func observed(_ value: UInt16) -> FileMode {
+        FileMode(rawValue: value)
+    }
+}
+
 public struct WriteCapability: ~Copyable {
     let root: URL
 
@@ -93,6 +105,18 @@ public enum FileSystemBoundary {
         }
     }
 
+    public static func mode(path: String) throws(PlatformError) -> FileMode {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            guard let value = attributes[.posixPermissions] as? NSNumber else {
+                throw PlatformError.read(path)
+            }
+            return FileMode.observed(value.uint16Value)
+        } catch {
+            throw .read(path)
+        }
+    }
+
     public static func write(
         _ data: Data,
         relativePath: ArtifactPath,
@@ -103,6 +127,34 @@ public enum FileSystemBoundary {
         do {
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             try data.write(to: destination, options: .atomic)
+        } catch {
+            throw .write(destination.path)
+        }
+    }
+
+    public static func copyRegularFile(
+        from source: String,
+        relativePath: ArtifactPath,
+        capability: consuming WriteCapability
+    ) throws(PlatformError) {
+        let destination = try authorizedURL(relativePath: relativePath, root: capability.root)
+        do {
+            guard try entryKind(path: source) == .file else {
+                throw PlatformError.read(source)
+            }
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: source),
+                to: destination
+            )
+            guard try entryKind(path: destination.path) == .file else {
+                throw PlatformError.write(destination.path)
+            }
+        } catch let error as PlatformError {
+            throw error
         } catch {
             throw .write(destination.path)
         }

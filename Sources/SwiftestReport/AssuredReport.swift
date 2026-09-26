@@ -511,7 +511,7 @@ public enum ReportCodec {
             "executionCount": .number(String(catalog.executionCount.rawValue)),
             "failures": .array(catalog.failures.map(failureValue)),
             "laws": .array(catalog.lawObservations.map {
-                .object(["code": .string($0.code), "status": .string($0.status.rawValue)])
+                .object(["code": .string($0.code.rawValue), "status": .string($0.status.rawValue)])
             }),
             "mutationObservations": .array(catalog.mutationObservations.map { observation in
                 .object([

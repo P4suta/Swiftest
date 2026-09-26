@@ -28,12 +28,6 @@ enum XcodeTargetTestDriver {
         } catch {
             return apparatus("xcode-container", "project or workspace unavailable")
         }
-        let scratchParent: String
-        if let configured = EnvironmentBoundary.value(for: "TMPDIR") {
-            scratchParent = configured
-        } else {
-            scratchParent = "/private/tmp"
-        }
         let result: XcodeAppTestResult
         do {
             result = try XcodeAppTestDriver.run(
@@ -41,7 +35,7 @@ enum XcodeTargetTestDriver {
                 scheme: scheme,
                 destination: destination,
                 workingDirectory: root,
-                scratchParent: scratchParent
+                scratchParent: "/private/tmp"
             )
         } catch {
             return apparatus("xcode-runner", "build, test, result, or coverage evidence incomplete")

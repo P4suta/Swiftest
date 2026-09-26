@@ -181,6 +181,7 @@ let package = Package(
                 "SwiftestFaults",
                 "SwiftestModel",
                 "SwiftestMutation",
+                "SwiftestPlatform",
                 "SwiftestScheduler",
                 "SwiftestSolver",
             ],

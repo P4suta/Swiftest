@@ -144,7 +144,7 @@ struct SwiftestCommand {
                 try FormalVerification.verifyOracle(
                     root: repository,
                     swiftOracle: VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
-                        + ArtifactPathOracle.text()
+                        + ArtifactPathOracle.text() + (try SATOracle.text())
                 )
             } catch let error {
                 throw CLIError.formal(String(describing: error))
@@ -174,7 +174,7 @@ struct SwiftestCommand {
         } catch let error {
             initialSeal = .failure(error)
         }
-        let lawReport = try LawScanner.scan(root: repository)
+        let lawReport: LawReport
         let tests: TargetTestObservation
         let sourceDigest: Digest?
         do {
@@ -182,35 +182,47 @@ struct SwiftestCommand {
             let seal = try initialSeal.get()
             try seal.verifyUnchanged()
             try repositoryIdentity.verifyCurrentLocation()
+            let snapshot = try SourceSnapshot(source: seal)
+            try seal.verifyUnchanged()
+            try snapshot.verifyUnchanged()
+            let scannedLaws = try LawScanner.scan(root: snapshot.root)
+            try snapshot.verifyUnchanged()
             let observed: TargetTestObservation
-            switch options.target {
-            case .automatic:
-                let package = SwiftPackageTestDriver.observe(root: repository)
-                if case .notConfigured = package {
-                    observed = XcodeTargetTestDriver.unconfiguredProject(root: repository)
-                } else {
-                    observed = package
+            if let diagnostic = toolchainFailure(root: snapshot.root) {
+                observed = .apparatus(diagnostic)
+            } else {
+                switch options.target {
+                case .automatic:
+                    let package = SwiftPackageTestDriver.observe(root: snapshot.root)
+                    if case .notConfigured = package {
+                        observed = XcodeTargetTestDriver.unconfiguredProject(root: snapshot.root)
+                    } else {
+                        observed = package
+                    }
+                case .xcode(let scheme, let destination, let project, let workspace):
+                    observed = XcodeTargetTestDriver.observe(
+                        root: snapshot.root,
+                        scheme: scheme,
+                        destination: destination,
+                        project: snapshot.rebasedContainer(project),
+                        workspace: snapshot.rebasedContainer(workspace)
+                    )
                 }
-            case .xcode(let scheme, let destination, let project, let workspace):
-                observed = XcodeTargetTestDriver.observe(
-                    root: repository,
-                    scheme: scheme,
-                    destination: destination,
-                    project: project,
-                    workspace: workspace
-                )
             }
             try repositoryIdentity.verifyCurrentLocation()
             try seal.verifyUnchanged()
+            try snapshot.verifyUnchanged()
             try repositoryIdentity.verifyCurrentLocation()
-            sourceDigest = try seal.manifestDigest()
+            sourceDigest = try snapshot.seal.manifestDigest()
+            lawReport = scannedLaws
             tests = observed
         } catch {
+            lawReport = try LawScanner.scan(root: repository)
             sourceDigest = nil
             tests = .apparatus(Diagnostic(
                 code: .apparatusFailed,
                 subject: "source-integrity",
-                detail: "source or project changed during test execution"
+                detail: "source or snapshot changed during verification"
             ))
         }
         let report = try makeReport(lawReport, tests: tests, sourceDigest: sourceDigest)
@@ -288,7 +300,7 @@ struct SwiftestCommand {
         if arguments == ["--formal-oracle"] {
             print(
                 VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
-                    + ArtifactPathOracle.text(),
+                    + ArtifactPathOracle.text() + (try SATOracle.text()),
                 terminator: ""
             )
             return
@@ -461,7 +473,7 @@ struct SwiftestCommand {
         }
         let observations = LawCode.allCases.map { law in
             let failed = laws.violations.contains(where: { $0.law == law })
-            return LawObservation(code: law.rawValue, status: failed ? .failed : .passed)
+            return LawObservation(code: law, status: failed ? .failed : .passed)
         }
         let run: RunID
         do {
@@ -519,6 +531,27 @@ struct SwiftestCommand {
         } catch let error {
             throw CLIError.report(error)
         }
+    }
+
+    static func toolchainFailure(root: String) -> Diagnostic? {
+        let observations: [ToolchainObservation]
+        do {
+            observations = try ToolchainAudit.inspect(root: root, level: .swift)
+        } catch {
+            return Diagnostic(
+                code: .apparatusFailed,
+                subject: "toolchain",
+                detail: "pinned toolchain could not be audited"
+            )
+        }
+        if let mismatch = observations.first(where: { $0.status == .mismatched }) {
+            return Diagnostic(
+                code: .apparatusFailed,
+                subject: mismatch.component,
+                detail: "pinned toolchain mismatch"
+            )
+        }
+        return nil
     }
 
     static func emitViolations(_ report: LawReport) throws {

@@ -11,46 +11,71 @@ enum SourceTreeSealError: Error {
 
 struct SourceTreeSeal {
     let root: String
-    let digests: [String: Digest]
+    let directories: [String]
+    let files: [String: SealedFile]
+
+    struct SealedFile: Equatable {
+        let digest: Digest
+        let mode: FileMode
+    }
 
     static func capture(root: String) throws(SourceTreeSealError) -> SourceTreeSeal {
         var files: [String] = []
-        try collect(root: root, relative: "", into: &files)
-        var digests: [String: Digest] = [:]
+        var directories: [String] = []
+        try collect(root: root, relative: "", files: &files, directories: &directories)
+        var captured: [String: SealedFile] = [:]
         for relative in files.sorted() {
             let data: Data
+            let mode: FileMode
             do {
                 data = try FileSystemBoundary.read(path: root + "/" + relative)
+                mode = try FileSystemBoundary.mode(path: root + "/" + relative)
             } catch let error {
                 throw .platform(error)
             }
             do {
-                digests[relative] = try Digest.sha256(data)
+                captured[relative] = SealedFile(digest: try Digest.sha256(data), mode: mode)
             } catch let error {
                 throw .digest(error)
             }
         }
-        return SourceTreeSeal(root: root, digests: digests)
+        return SourceTreeSeal(root: root, directories: directories.sorted(), files: captured)
     }
 
     func verifyUnchanged() throws(SourceTreeSealError) {
         let after = try Self.capture(root: root)
-        let names = Set(digests.keys).union(after.digests.keys)
-        for name in names.sorted() where digests[name] != after.digests[name] {
+        try assertSameTree(as: after)
+    }
+
+    func assertSameTree(as after: SourceTreeSeal) throws(SourceTreeSealError) {
+        if directories != after.directories {
+            throw .changed("directories")
+        }
+        let names = Set(files.keys).union(after.files.keys)
+        for name in names.sorted() where files[name] != after.files[name] {
             throw .changed(name)
         }
     }
 
     func manifestDigest() throws(SourceTreeSealError) -> Digest {
         var manifest = Data()
-        for name in digests.keys.sorted() {
-            guard let digest = digests[name] else {
+        for directory in directories {
+            manifest.append(68)
+            manifest.append(contentsOf: String(directory.utf8.count).utf8)
+            manifest.append(58)
+            manifest.append(contentsOf: directory.utf8)
+        }
+        for name in files.keys.sorted() {
+            guard let file = files[name] else {
                 throw .changed(name)
             }
+            manifest.append(70)
             manifest.append(contentsOf: String(name.utf8.count).utf8)
             manifest.append(58)
             manifest.append(contentsOf: name.utf8)
-            manifest.append(contentsOf: digest.rawValue.utf8)
+            manifest.append(contentsOf: file.digest.rawValue.utf8)
+            manifest.append(58)
+            manifest.append(contentsOf: String(file.mode.rawValue).utf8)
         }
         do {
             return try Digest.sha256(manifest)
@@ -62,7 +87,8 @@ struct SourceTreeSeal {
     private static func collect(
         root: String,
         relative: String,
-        into files: inout [String]
+        files: inout [String],
+        directories: inout [String]
     ) throws(SourceTreeSealError) {
         let directory = relative.isEmpty ? root : root + "/" + relative
         let names: [String]
@@ -73,9 +99,6 @@ struct SourceTreeSeal {
         }
         for name in names {
             let child = relative.isEmpty ? name : relative + "/" + name
-            if relative.isEmpty && excludedDirectoryNames.contains(name) {
-                continue
-            }
             let kind: FileEntryKind
             do {
                 kind = try FileSystemBoundary.entryKind(path: root + "/" + child)
@@ -86,14 +109,14 @@ struct SourceTreeSeal {
             case .file:
                 files.append(child)
             case .directory:
-                try collect(root: root, relative: child, into: &files)
+                if relative.isEmpty && SourceExclusionPolicy.excludesDirectory(relativePath: child) {
+                    continue
+                }
+                directories.append(child)
+                try collect(root: root, relative: child, files: &files, directories: &directories)
             case .symbolicLink, .other:
                 throw .unsupportedEntry(child)
             }
         }
     }
-
-    private static let excludedDirectoryNames: Set<String> = [
-        ".git", ".build", ".lake", ".swiftpm", "DerivedData",
-    ]
 }

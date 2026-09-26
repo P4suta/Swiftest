@@ -6,7 +6,6 @@ public enum SATError: Error, Equatable, Sendable {
     case variableLimit(Int)
     case incompleteCertificate(SATVariable)
     case invalidCertificate
-    case unsatisfiableProofUnavailable
 }
 
 public struct SATVariable: Hashable, Sendable, Comparable {
@@ -81,10 +80,10 @@ public struct SATCertificate: Equatable, Sendable {
 }
 
 public struct UnsatisfiableCertificate: Equatable, Sendable {
-    public let checkedAssignments: EvidenceCount
+    public let verificationDomainSize: EvidenceCount
 
-    init(checkedAssignments: EvidenceCount) {
-        self.checkedAssignments = checkedAssignments
+    init(verificationDomainSize: EvidenceCount) {
+        self.verificationDomainSize = verificationDomainSize
     }
 }
 
@@ -105,42 +104,40 @@ public enum SATSolver {
         if variables.count > 24 {
             throw .variableLimit(variables.count)
         }
-        var checked = 0
         if let assignments = search(
             formula: formula,
             variables: variables,
             index: 0,
-            assignments: [:],
-            checked: &checked
+            assignments: [:]
         ) {
             return .satisfiable(SATCertificate(assignments: assignments))
         }
         let count: EvidenceCount
         do {
-            count = try EvidenceCount.nonnegative(checked)
+            count = try EvidenceCount.nonnegative(1 << variables.count)
         } catch {
             throw .variableLimit(variables.count)
         }
-        return .unsatisfiable(UnsatisfiableCertificate(checkedAssignments: count))
+        return .unsatisfiable(UnsatisfiableCertificate(verificationDomainSize: count))
     }
 
     private static func search(
         formula: SATFormula,
         variables: [SATVariable],
         index: Int,
-        assignments: [SATVariable: SATTruth],
-        checked: inout Int
+        assignments: [SATVariable: SATTruth]
     ) -> [SATVariable: SATTruth]? {
         if formula.clauses.contains(where: { clauseValue($0, assignments: assignments) == .falseValue }) {
-            checked += 1
             return nil
         }
         if formula.clauses.allSatisfy({ clauseValue($0, assignments: assignments) == .trueValue }) {
-            checked += 1
-            return assignments
+            var complete = assignments
+            for variable in variables where complete[variable] == nil {
+                complete[variable] = .falseValue
+            }
+            return complete
         }
         if index >= variables.count {
-            checked += 1
             return nil
         }
         let variable = variables[index]
@@ -149,8 +146,7 @@ public enum SATSolver {
                 formula: formula,
                 variables: variables,
                 index: index + 1,
-                assignments: assignments,
-                checked: &checked
+                assignments: assignments
             )
         }
         var falseAssignments = assignments
@@ -159,8 +155,7 @@ public enum SATSolver {
             formula: formula,
             variables: variables,
             index: index + 1,
-            assignments: falseAssignments,
-            checked: &checked
+            assignments: falseAssignments
         ) {
             return result
         }
@@ -170,8 +165,7 @@ public enum SATSolver {
             formula: formula,
             variables: variables,
             index: index + 1,
-            assignments: trueAssignments,
-            checked: &checked
+            assignments: trueAssignments
         )
     }
 
@@ -201,7 +195,42 @@ public enum SATProofKernel {
         formula: SATFormula,
         certificate: UnsatisfiableCertificate
     ) throws(SATError) {
-        throw .unsatisfiableProofUnavailable
+        let variables = formula.variables
+        if variables.count > 24 {
+            throw .variableLimit(variables.count)
+        }
+        if certificate.verificationDomainSize.rawValue != 1 << variables.count {
+            throw .invalidCertificate
+        }
+        var positions: [SATVariable: Int] = [:]
+        for (index, variable) in variables.enumerated() {
+            positions[variable] = index
+        }
+        for assignment in 0..<(1 << variables.count) {
+            var formulaSatisfied = true
+            for clause in formula.clauses {
+                var clauseSatisfied = false
+                for literal in clause.literals {
+                    guard let position = positions[literal.variable] else {
+                        throw .invalidCertificate
+                    }
+                    let value = (assignment & (1 << position)) != 0
+                    switch literal {
+                    case .positive:
+                        clauseSatisfied = clauseSatisfied || value
+                    case .negative:
+                        clauseSatisfied = clauseSatisfied || !value
+                    }
+                }
+                if !clauseSatisfied {
+                    formulaSatisfied = false
+                    break
+                }
+            }
+            if formulaSatisfied {
+                throw .invalidCertificate
+            }
+        }
     }
 
     public static func verify(
@@ -229,5 +258,38 @@ public enum SATProofKernel {
                 throw .invalidCertificate
             }
         }
+    }
+}
+
+public enum SATOracle {
+    public static func text() throws(SATError) -> String {
+        let first = try SATVariable.make(1)
+        let second = try SATVariable.make(2)
+        let literals: [(name: String, literal: SATLiteral)] = [
+            ("x", .positive(first)),
+            ("not-x", .negative(first)),
+            ("y", .positive(second)),
+            ("not-y", .negative(second)),
+        ]
+        var lines: [String] = []
+        for left in literals {
+            for right in literals {
+                let formula = SATFormula(clauses: [
+                    try SATClause.make([left.literal]),
+                    try SATClause.make([right.literal]),
+                ])
+                let outcome: String
+                switch try SATSolver.solve(formula) {
+                case .satisfiable(let certificate):
+                    try SATProofKernel.verify(formula: formula, certificate: certificate)
+                    outcome = "satisfiable"
+                case .unsatisfiable(let certificate):
+                    try SATProofKernel.verify(formula: formula, certificate: certificate)
+                    outcome = "unsatisfiable"
+                }
+                lines.append(["sat", left.name, right.name, outcome].joined(separator: "\t"))
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 }

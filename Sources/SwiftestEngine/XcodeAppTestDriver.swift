@@ -154,7 +154,7 @@ public enum XcodeAppTestDriver {
         )
         let buildOutput: ProcessOutput
         do {
-            buildOutput = try XcodeTestDriver.run(build)
+            buildOutput = try XcodeTestDriver.run(build, scratch: scratch)
         } catch let error {
             throw .bridge(error)
         }
@@ -162,7 +162,7 @@ public enum XcodeAppTestDriver {
             throw .exitDisagreesWithSummary(buildOutput.exitCode)
         }
         let xctestrun = try findXctestrun(products: derivedData + "/Build/Products")
-        try validateXctestrunVersion(path: xctestrun, workingDirectory: workingDirectory)
+        try validateXctestrunVersion(path: xctestrun, workingDirectory: workingDirectory, scratch: scratch)
         let test = testInvocation(
             xctestrun: xctestrun,
             destination: destination,
@@ -171,7 +171,7 @@ public enum XcodeAppTestDriver {
         )
         let exitCode: Int32
         do {
-            let output = try XcodeTestDriver.run(test)
+            let output = try XcodeTestDriver.run(test, scratch: scratch)
             exitCode = output.exitCode
         } catch let error {
             switch error {
@@ -186,7 +186,7 @@ public enum XcodeAppTestDriver {
             summaryOutput = try XcodeTestDriver.run(XcodeTestDriver.invocation(
                 action: .resultSummary(resultBundle: resultBundle),
                 workingDirectory: workingDirectory
-            ))
+            ), scratch: scratch)
         } catch let error {
             throw .bridge(error)
         }
@@ -209,7 +209,7 @@ public enum XcodeAppTestDriver {
             coverageOutput = try XcodeTestDriver.run(XcodeTestDriver.invocation(
                 action: .coverage(resultBundle: resultBundle),
                 workingDirectory: workingDirectory
-            ))
+            ), scratch: scratch)
         } catch let error {
             throw .bridge(error)
         }
@@ -315,7 +315,8 @@ public enum XcodeAppTestDriver {
 
     static func validateXctestrunVersion(
         path: String,
-        workingDirectory: String
+        workingDirectory: String,
+        scratch: borrowing ScratchDirectoryOwner
     ) throws(XcodeAppTestError) {
         let invocation = XcodeInvocation(
             executable: "/usr/bin/plutil",
@@ -327,7 +328,7 @@ public enum XcodeAppTestDriver {
         )
         let output: ProcessOutput
         do {
-            output = try XcodeTestDriver.run(invocation)
+            output = try XcodeTestDriver.run(invocation, scratch: scratch)
         } catch {
             throw .invalidXctestrunVersion(path)
         }

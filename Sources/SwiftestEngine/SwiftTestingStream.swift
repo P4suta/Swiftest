@@ -131,6 +131,36 @@ public struct SwiftTestingRunSummary: Equatable, Sendable {
     }
 }
 
+public struct SwiftTestingCampaignSummary: Equatable, Sendable {
+    public let runs: EvidenceCount
+    public let discovered: EvidenceCount
+    public let passed: EvidenceCount
+    public let failed: EvidenceCount
+    public let skipped: EvidenceCount
+    public let cancelled: EvidenceCount
+    public let runIssues: EvidenceCount
+    public let parameterizedFunctions: EvidenceCount
+    public let startedCases: EvidenceCount
+    public let endedCases: EvidenceCount
+    public let functionNames: [String]
+}
+
+public struct SwiftTestingCampaignEvidence: Equatable, Sendable {
+    public let summary: SwiftTestingCampaignSummary
+    public let bytes: Data
+
+    private init(summary: SwiftTestingCampaignSummary, bytes: Data) {
+        self.summary = summary
+        self.bytes = bytes
+    }
+
+    public static func decode(_ data: Data) throws(SwiftTestingStreamError) -> SwiftTestingCampaignEvidence {
+        let records = try StableTestingABI.decodeStream(data)
+        let summary = try StableTestingABI.summarizeCampaign(records)
+        return SwiftTestingCampaignEvidence(summary: summary, bytes: data)
+    }
+}
+
 private struct SwiftTestingCaseGroup: Hashable {
     let testID: SwiftTestingTestID
     let iteration: Int
@@ -187,7 +217,7 @@ extension StableTestingABI {
         } catch let error {
             throw .codec(error)
         }
-        guard version == .string("6.4") else {
+        guard version == .string("6.4.0") else {
             throw .unsupportedVersion(StrictJSON.render(version))
         }
         switch kind {
@@ -242,13 +272,15 @@ extension StableTestingABI {
                     runEnded = true
                     continue
                 }
-                if event.kind == .issueRecorded, let issue = event.issue, issue.isFailure {
+                if event.kind == .issueRecorded, let issue = event.issue {
                     if let id = event.testID {
                         guard discovered[id] != nil, started.contains(id), !completed.contains(id) else {
                             throw .invalidSequence("issue outside active test")
                         }
-                        failing.insert(id)
-                    } else {
+                        if issue.isFailure {
+                            failing.insert(id)
+                        }
+                    } else if issue.isFailure {
                         runIssues += 1
                     }
                 }
@@ -281,6 +313,7 @@ extension StableTestingABI {
                     }
                 case .testCaseStarted, .testCaseEnded, .testCaseCancelled:
                     guard let id = event.testID, functions.contains(id),
+                        discovered[id] == .function(parameterized: true),
                         started.contains(id), !completed.contains(id),
                         let iteration = event.iteration, iteration > 0 else {
                         throw .invalidSequence("case event without active parent and iteration")
@@ -352,6 +385,113 @@ extension StableTestingABI {
                 cancelled: .nonnegative(cancelled.count),
                 runIssues: .nonnegative(runIssues)
             )
+        } catch let error {
+            throw .count(error)
+        }
+    }
+
+    public static func summarizeCampaign(
+        _ records: [SwiftTestingRecord]
+    ) throws(SwiftTestingStreamError) -> SwiftTestingCampaignSummary {
+        if records.isEmpty {
+            throw .emptyStream
+        }
+        var current: [SwiftTestingRecord] = []
+        var summaries: [SwiftTestingRunSummary] = []
+        var declared = Set<SwiftTestingTestID>()
+        var functionNames: [String] = []
+        var parameterized = 0
+        var startedCases = 0
+        var endedCases = 0
+        for record in records {
+            switch record {
+            case .test(let test):
+                if !declared.insert(test.id).inserted {
+                    throw .invalidSequence("duplicate test across runs")
+                }
+                switch test.kind {
+                case .suite:
+                    break
+                case .function(let isParameterized):
+                    functionNames.append(test.name)
+                    if isParameterized {
+                        parameterized = try increment(parameterized)
+                    }
+                }
+            case .event(let event):
+                switch event.kind {
+                case .testCaseStarted:
+                    startedCases = try increment(startedCases)
+                case .testCaseEnded:
+                    endedCases = try increment(endedCases)
+                default:
+                    break
+                }
+            }
+            current.append(record)
+            if case .event(let event) = record, event.kind == .runEnded {
+                summaries.append(try summarize(current))
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+        if !current.isEmpty {
+            throw .invalidSequence("unterminated run")
+        }
+        if summaries.isEmpty {
+            throw .invalidSequence("no completed runs")
+        }
+        if startedCases != endedCases {
+            throw .invalidSequence("unpaired test cases")
+        }
+        var passed = EvidenceCount.zero
+        var failed = EvidenceCount.zero
+        var skipped = EvidenceCount.zero
+        var cancelled = EvidenceCount.zero
+        var runIssues = EvidenceCount.zero
+        for summary in summaries {
+            passed = try adding(passed, summary.passed)
+            failed = try adding(failed, summary.failed)
+            skipped = try adding(skipped, summary.skipped)
+            cancelled = try adding(cancelled, summary.cancelled)
+            runIssues = try adding(runIssues, summary.runIssues)
+        }
+        do {
+            return try SwiftTestingCampaignSummary(
+                runs: .nonnegative(summaries.count),
+                discovered: .nonnegative(functionNames.count),
+                passed: passed,
+                failed: failed,
+                skipped: skipped,
+                cancelled: cancelled,
+                runIssues: runIssues,
+                parameterizedFunctions: .nonnegative(parameterized),
+                startedCases: .nonnegative(startedCases),
+                endedCases: .nonnegative(endedCases),
+                functionNames: functionNames.sorted()
+            )
+        } catch let error {
+            throw .count(error)
+        }
+    }
+
+    private static func increment(_ value: Int) throws(SwiftTestingStreamError) -> Int {
+        let next = value.addingReportingOverflow(1)
+        if next.overflow {
+            throw .count(.overflow)
+        }
+        return next.partialValue
+    }
+
+    private static func adding(
+        _ lhs: EvidenceCount,
+        _ rhs: EvidenceCount
+    ) throws(SwiftTestingStreamError) -> EvidenceCount {
+        let next = lhs.rawValue.addingReportingOverflow(rhs.rawValue)
+        if next.overflow {
+            throw .count(.overflow)
+        }
+        do {
+            return try .nonnegative(next.partialValue)
         } catch let error {
             throw .count(error)
         }

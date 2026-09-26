@@ -43,6 +43,10 @@ func parameterizedCasesRequireMatchedStartAndEndBeforeParentEnd() throws {
     let summary = try StableTestingABI.summarize(complete)
     #expect(summary.discovered.rawValue == 1)
     #expect(summary.passed.rawValue == 1)
+    let campaign = try StableTestingABI.summarizeCampaign(complete)
+    #expect(campaign.parameterizedFunctions.rawValue == 1)
+    #expect(campaign.startedCases.rawValue == 2)
+    #expect(campaign.endedCases.rawValue == 2)
 
     let missingStart = parameterizedRun(id: id, cases: [
         testingEvent(.testCaseEnded, testID: id, iteration: 1),
@@ -61,6 +65,60 @@ func parameterizedCasesRequireMatchedStartAndEndBeforeParentEnd() throws {
     let noCases = parameterizedRun(id: id, cases: [])
     #expect(throws: SwiftTestingStreamError.invalidSequence("parameterized test without case evidence")) {
         try StableTestingABI.summarize(noCases)
+    }
+}
+
+@Test
+func swiftTestingCampaignClosesMultipleBundlesWithoutDuplicateOrMissingRuns() throws {
+    let first = try SwiftTestingTestID.parse("FirstTests/one()")
+    let second = try SwiftTestingTestID.parse("SecondTests/two()")
+    let firstRun: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: first, name: "one()", kind: .function(parameterized: false))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: first),
+        testingEvent(.testEnded, testID: first),
+        testingEvent(.runEnded),
+    ]
+    let secondRun: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: second, name: "two()", kind: .function(parameterized: false))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: second),
+        testingEvent(.testEnded, testID: second),
+        testingEvent(.runEnded),
+    ]
+    let campaign = try StableTestingABI.summarizeCampaign(firstRun + secondRun)
+    #expect(campaign.runs.rawValue == 2)
+    #expect(campaign.discovered.rawValue == 2)
+    #expect(campaign.passed.rawValue == 2)
+    #expect(campaign.functionNames == ["one()", "two()"])
+    #expect(throws: SwiftTestingStreamError.invalidSequence("duplicate test across runs")) {
+        try StableTestingABI.summarizeCampaign(firstRun + firstRun)
+    }
+    #expect(throws: SwiftTestingStreamError.invalidSequence("unterminated run")) {
+        try StableTestingABI.summarizeCampaign(firstRun + Array(secondRun.dropLast()))
+    }
+    #expect(throws: SwiftTestingStreamError.invalidSequence("missing or duplicate test start")) {
+        try StableTestingABI.summarizeCampaign(firstRun + [
+            testingEvent(.runStarted),
+            testingEvent(.testStarted, testID: second),
+            testingEvent(.runEnded),
+        ])
+    }
+}
+
+@Test
+func swiftTestingABIAcceptsPinnedSixFourPatchVersion() throws {
+    let record = Data("{\"version\":\"6.4.0\",\"kind\":\"test\",\"payload\":{\"kind\":\"function\",\"name\":\"one()\",\"id\":\"Module.one()\",\"isParameterized\":false,\"sourceLocation\":{\"filePath\":\"/tmp/One.swift\",\"line\":1,\"column\":1},\"tags\":[]}}".utf8)
+    let decoded = try StableTestingABI.decodeRecord(record)
+    if case .test(let test) = decoded {
+        #expect(test.name == "one()")
+    } else {
+        Issue.record("pinned ABI test record was not decoded")
+    }
+    let unpinned = Data(String(decoding: record, as: UTF8.self)
+        .replacingOccurrences(of: "6.4.0", with: "6.4").utf8)
+    #expect(throws: SwiftTestingStreamError.unsupportedVersion("\"6.4\"")) {
+        try StableTestingABI.decodeRecord(unpinned)
     }
 }
 
@@ -88,6 +146,37 @@ func parameterizedCaseEventsRequireAnActiveDeclaredParentAndSameIteration() thro
     ])
     #expect(throws: SwiftTestingStreamError.invalidSequence("case end without start")) {
         try StableTestingABI.summarize(unmatchedIteration)
+    }
+}
+
+@Test
+func nonparameterizedCaseEventsAndUnownedNonfailureIssuesAreRejected() throws {
+    let id = try SwiftTestingTestID.parse("Suite/plain()")
+    let foreign = try SwiftTestingTestID.parse("Suite/foreign()")
+    let plain: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "plain()", kind: .function(parameterized: false))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: id),
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+        testingEvent(.testEnded, testID: id),
+        testingEvent(.runEnded),
+    ]
+    #expect(throws: SwiftTestingStreamError.invalidSequence("case event without active parent and iteration")) {
+        try StableTestingABI.summarize(plain)
+    }
+
+    let nonfailure = SwiftTestingIssue(isKnown: true, isFailure: false, severity: "warning")
+    let unknownIssue: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "plain()", kind: .function(parameterized: false))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: id),
+        testingEvent(.issueRecorded, testID: foreign, issue: nonfailure),
+        testingEvent(.testEnded, testID: id),
+        testingEvent(.runEnded),
+    ]
+    #expect(throws: SwiftTestingStreamError.invalidSequence("issue outside active test")) {
+        try StableTestingABI.summarize(unknownIssue)
     }
 }
 
@@ -150,7 +239,7 @@ func testCancellationNeedsStartAndEndAndFailureTakesPrecedence() throws {
 @Test
 func swiftTestingABIRejectsZeroIteration() throws {
     let event = """
-    {"version":"6.4","kind":"event","payload":{"kind":"testCaseStarted","instant":{"absolute":1,"since1970":1},"messages":[],"testID":"Suite/cases(_:)","iteration":0}}
+    {"version":"6.4.0","kind":"event","payload":{"kind":"testCaseStarted","instant":{"absolute":1,"since1970":1},"messages":[],"testID":"Suite/cases(_:)","iteration":0}}
     """
     #expect(throws: SwiftTestingStreamError.invalidNumber("iteration")) {
         try StableTestingABI.decodeRecord(Data(event.utf8))

@@ -15,7 +15,7 @@ public struct AssuranceScore: Equatable, Sendable {
         let lawStatuses = catalog.lawObservations.map(\.status)
         let schemaStatuses = catalog.schemaObservations.map(\.status)
         let statuses = claimStatuses + mutationStatuses + lawStatuses + schemaStatuses
-        let passedValue = statuses.filter { $0 == .passed || $0 == .provenIrrelevant }.count
+        let passedValue = statuses.filter { $0 == .passed }.count
         return AssuranceScore(
             passed: try .nonnegative(passedValue),
             total: try .nonnegative(statuses.count)

@@ -1,6 +1,7 @@
 import SwiftestProofs.Verdict
 import SwiftestProofs.Faults
 import SwiftestProofs.Path
+import SwiftestProofs.SAT
 
 open Swiftest
 
@@ -111,6 +112,34 @@ def pathOracleLines : List String :=
       pathDecisionText (classifyPath entry.2)
     ]
 
+def satLiterals : List (String × Literal) := [
+  ("x", ⟨1, true⟩),
+  ("not-x", ⟨1, false⟩),
+  ("y", ⟨2, true⟩),
+  ("not-y", ⟨2, false⟩)
+]
+
+def satAssignment (x y : Bool) : Assignment :=
+  fun index => if index == 1 then x else if index == 2 then y else false
+
+def satOutcome (formula : Formula) : String :=
+  if [false, true].any (fun x =>
+    [false, true].any (fun y => verifySAT formula (satAssignment x y))) then
+    "satisfiable"
+  else
+    "unsatisfiable"
+
+def satOracleLines : List String :=
+  satLiterals.flatMap fun left =>
+    satLiterals.map fun right =>
+      String.intercalate "\t" [
+        "sat",
+        left.1,
+        right.1,
+        satOutcome [[left.2], [right.2]]
+      ]
+
 def main : IO Unit :=
   IO.print (String.intercalate "\n"
-    (oracleLines ++ faultOracleLines ++ boundaryOracleLines ++ reportOracleLines ++ pathOracleLines) ++ "\n")
+    (oracleLines ++ faultOracleLines ++ boundaryOracleLines ++ reportOracleLines ++ pathOracleLines
+      ++ satOracleLines) ++ "\n")

@@ -164,6 +164,7 @@ public enum SwiftestModuleGraph {
                 "SwiftestFaults",
                 "SwiftestModel",
                 "SwiftestMutation",
+                "SwiftestPlatform",
                 "SwiftestScheduler",
                 "SwiftestSolver",
             ],

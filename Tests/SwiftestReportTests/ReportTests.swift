@@ -149,6 +149,15 @@ func scoreAndExecutionVolumeCannotChangeVerdict() throws {
 }
 
 @Test
+func unprovenIrrelevanceCannotIncreaseScore() throws {
+    let evidence = try catalog(executionCount: 1, claimStatus: .provenIrrelevant)
+    let score = try AssuranceScore.measure(evidence)
+    #expect(score.passed.rawValue + 1 == score.total.rawValue)
+    let audited = try AuditKernel.close(evidence)
+    #expect(audited.verdict == .gaps)
+}
+
+@Test
 func catalogDigestBindsFailureEvidence() throws {
     let cleanReport = try AssuredReport(
         catalog: AuditKernel.close(try catalog(executionCount: 1)),
@@ -185,18 +194,14 @@ func swiftVerdictOracleIsExhaustiveAndStable() {
 
 private func catalog(
     executionCount: Int,
-    failures: [ExecutionFailure] = []
+    failures: [ExecutionFailure] = [],
+    claimStatus: ObservationStatus = .passed
 ) throws -> EvidenceCatalog {
     let preservation = try ClaimID.parse("preservation-1")
     let detection = try ClaimID.parse("detection-1")
     let world = try WorldID.parse("world-1")
     let mutant = try MutantID.parse("mutant-1")
-    let laws = executionCount == 1
-        ? [LawObservation(code: "laws", status: .passed)]
-        : [
-            LawObservation(code: "laws", status: .passed),
-            LawObservation(code: "fault-laws", status: .passed),
-        ]
+    let laws = LawCode.allCases.map { LawObservation(code: $0, status: .passed) }
     return EvidenceCatalog(
         run: try RunID.parse("run-report"),
         scope: .complete,
@@ -205,7 +210,7 @@ private func catalog(
         worlds: [world],
         mutants: [mutant],
         claimObservations: [
-            ClaimObservation(claim: preservation, world: world, status: .passed, diagnostic: nil),
+            ClaimObservation(claim: preservation, world: world, status: claimStatus, diagnostic: nil),
             ClaimObservation(claim: detection, world: world, status: .passed, diagnostic: nil),
         ],
         mutationObservations: [MutationObservation(

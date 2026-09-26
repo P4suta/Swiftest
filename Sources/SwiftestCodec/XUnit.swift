@@ -1,6 +1,112 @@
 import Foundation
 import SwiftestModel
 
+public enum XUnitLibrary: String, CaseIterable, Equatable, Hashable, Sendable {
+    case xctest
+    case swiftTesting
+}
+
+public struct XUnitRunnerDocuments: Sendable {
+    public let xctest: Data
+    public let swiftTesting: Data
+
+    public init(_ documents: [XUnitLibrary: Data]) throws(XUnitCodecError) {
+        guard let xctest = documents[.xctest] else {
+            throw .missingDocument(.xctest)
+        }
+        guard let swiftTesting = documents[.swiftTesting] else {
+            throw .missingDocument(.swiftTesting)
+        }
+        self.xctest = xctest
+        self.swiftTesting = swiftTesting
+    }
+
+    public var ordered: [(library: XUnitLibrary, data: Data)] {
+        [(.xctest, xctest), (.swiftTesting, swiftTesting)]
+    }
+}
+
+public struct XUnitTestInventory: Sendable {
+    private let specifiers: Set<String>
+
+    public var canonicalText: String {
+        specifiers.sorted().joined(separator: "\n") + "\n"
+    }
+
+    public static func decode(_ output: String) throws(XUnitCodecError) -> XUnitTestInventory {
+        if output.utf8.count > 32_000_000 {
+            throw .resourceLimit
+        }
+        var lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+        if let last = lines.last, last.isEmpty {
+            lines.removeLast()
+        }
+        if lines.isEmpty {
+            throw .missingInventory
+        }
+        if lines.count > 200_000 {
+            throw .resourceLimit
+        }
+        var specifiers = Set<String>()
+        for (index, line) in lines.enumerated() {
+            if line.unicodeScalars.contains(where: { $0.value < 32 }) {
+                throw .invalidInventoryLine(index + 1)
+            }
+            let specifier = String(line)
+            if specifier.contains("/") {
+                let parts = line.split(separator: "/", omittingEmptySubsequences: false)
+                guard parts.count == 2,
+                    let className = parts.first,
+                    let name = parts.last,
+                    !className.isEmpty,
+                    !name.isEmpty else {
+                    throw .invalidInventoryLine(index + 1)
+                }
+            } else {
+                guard let opening = specifier.firstIndex(of: "("),
+                    let separator = specifier[..<opening].lastIndex(of: "."),
+                    separator != specifier.startIndex,
+                    specifier.index(after: separator) != opening,
+                    specifier.hasSuffix(")"),
+                    !specifier.contains(where: { $0.isWhitespace }) else {
+                    throw .invalidInventoryLine(index + 1)
+                }
+            }
+            if !specifiers.insert(specifier).inserted {
+                throw .duplicateInventoryCase(specifier)
+            }
+        }
+        return XUnitTestInventory(specifiers: specifiers)
+    }
+
+    public func verify(xctest: XUnitReport, swiftTesting: XUnitReport) throws(XUnitCodecError) {
+        var observed = Set<String>()
+        for (library, report) in [(XUnitLibrary.xctest, xctest), (.swiftTesting, swiftTesting)] {
+            for testCase in report.cases {
+                guard let className = testCase.className, !className.isEmpty else {
+                    throw .missingCaseClassName(testCase.suite + "." + testCase.name)
+                }
+                let separator: String
+                switch library {
+                case .xctest:
+                    separator = "/"
+                case .swiftTesting:
+                    separator = className.contains(".") ? "/" : "."
+                }
+                let specifier = className + separator + testCase.name
+                if !observed.insert(specifier).inserted {
+                    throw .duplicateTestCase(specifier)
+                }
+            }
+        }
+        let missing = specifiers.subtracting(observed).sorted()
+        let unexpected = observed.subtracting(specifiers).sorted()
+        if !missing.isEmpty || !unexpected.isEmpty {
+            throw .inventoryMismatch(missing: missing, unexpected: unexpected)
+        }
+    }
+}
+
 public enum XUnitCaseStatus: String, CaseIterable, Equatable, Sendable {
     case passed
     case failed
@@ -59,9 +165,21 @@ public enum XUnitCodecError: Error, Equatable, Sendable {
     case duplicateTestCase(String)
     case conflictingCaseStatus(String)
     case unexpectedText(String)
+    case missingDocument(XUnitLibrary)
+    case missingInventory
+    case invalidInventoryLine(Int)
+    case duplicateInventoryCase(String)
+    case missingCaseClassName(String)
+    case inventoryMismatch(missing: [String], unexpected: [String])
 }
 
 public enum XUnitCodec {
+    public static func decodeRunnerDocuments(
+        _ documents: XUnitRunnerDocuments
+    ) throws(XUnitCodecError) -> XUnitReport {
+        try decodeDocuments(documents.ordered.map(\.data))
+    }
+
     public static func decode(_ data: Data) throws(XUnitCodecError) -> XUnitReport {
         guard String(data: data, encoding: .utf8) != nil else {
             throw .invalidUTF8
