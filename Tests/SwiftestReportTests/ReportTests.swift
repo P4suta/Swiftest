@@ -139,13 +139,13 @@ func reportSchemaDeclaresEveryEncodedScoreField() throws {
 }
 
 @Test
-func scoreAndExecutionVolumeCannotChangeVerdict() throws {
+func executionVolumeCannotChangeScoreOrVerdict() throws {
     let first = try catalog(executionCount: 1)
     let second = try catalog(executionCount: 999)
     let firstSignals = VerdictDecision.signals(for: first)
     let secondSignals = VerdictDecision.signals(for: second)
     #expect(VerdictDecision.decide(firstSignals) == VerdictDecision.decide(secondSignals))
-    #expect(try AssuranceScore.measure(first).total != AssuranceScore.measure(second).total)
+    #expect(try AssuranceScore.measure(first) == AssuranceScore.measure(second))
 }
 
 @Test
