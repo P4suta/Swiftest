@@ -7,7 +7,7 @@ module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
-for fixture in InvalidTransition IDMixing ClaimPolarity CapabilityCopy ClosedDomainAssociatedValue ClosedDomainConditionalCase ClosedDomainHandwrittenMember ClosedDomainEmpty ClosedDomainGeneric ClosedDomainAttributedCase ClosedDomainWrongDecl PropertyMissingTest PropertyNonemptyBody PropertyInvalidIterationType PerformanceClaimUnsupported TestDoubleUnsupported NonInterferenceProofForgery
+for fixture in InvalidTransition MissingBuildReceipt ForgedBuildReceipt ForgedBaselineReceipt ForgedExecutionReceipt ForgedReceiptFactory IDMixing ClaimPolarity DeclaredClaimsWrongPolarity DeclaredClaimsRawID FrozenPlanRawWorldID CapabilityCopy ClosedDomainAssociatedValue ClosedDomainConditionalCase ClosedDomainHandwrittenMember ClosedDomainEmpty ClosedDomainGeneric ClosedDomainAttributedCase ClosedDomainWrongDecl PropertyMissingTest PropertyNonemptyBody PropertyInvalidIterationType PerformanceClaimUnsupported TestDoubleUnsupported NonInterferenceProofForgery
 do
     fixture_path="$project_root/Fixtures/CompileFail/$fixture"
     log_path="$scratch_root/$fixture.log"
@@ -23,9 +23,17 @@ do
     fi
     case "$fixture" in
         InvalidTransition) expected="requires the types 'Discovered' and 'BaselinePassed' be equivalent" ;;
+        MissingBuildReceipt) expected="missing argument for parameter 'receipt'" ;;
+        ForgedBuildReceipt) expected="inaccessible" ;;
+        ForgedBaselineReceipt) expected="inaccessible" ;;
+        ForgedExecutionReceipt) expected="inaccessible" ;;
+        ForgedReceiptFactory) expected="inaccessible" ;;
         IDMixing) expected="cannot convert value of type 'ClaimID' to expected argument type 'RunID'" ;;
         ClaimPolarity) expected="cannot convert value of type 'Claim<Detection>' to expected argument type 'Claim<Preservation>'" ;;
-        CapabilityCopy) expected="borrowed and cannot be consumed" ;;
+        DeclaredClaimsWrongPolarity) expected="cannot convert value of type 'Claim<Detection>' to expected element type 'Array<Claim<Preservation>>.ArrayLiteralElement'" ;;
+        DeclaredClaimsRawID) expected="inaccessible" ;;
+        FrozenPlanRawWorldID) expected="cannot convert value of type '[WorldID]' to expected argument type 'DeclaredWorlds'" ;;
+        CapabilityCopy) expected="'capability' consumed more than once" ;;
         ClosedDomainAssociatedValue) expected="@ClosedDomain case payload has associated values" ;;
         ClosedDomainConditionalCase) expected="@ClosedDomain does not support conditional cases" ;;
         ClosedDomainHandwrittenMember) expected="@ClosedDomain owns member cases" ;;
@@ -46,4 +54,4 @@ do
         exit 1
     fi
 done
-echo "compile-fail=passed fixtures=17"
+echo "compile-fail=passed fixtures=25"

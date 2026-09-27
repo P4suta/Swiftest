@@ -1,5 +1,6 @@
 import Foundation
 import SwiftestCodec
+import SwiftestLaws
 
 private enum MacroWireError: Error, Equatable, Sendable {
     case io
@@ -336,13 +337,27 @@ private enum SwiftestCompilerPlugin {
                 response = MacroResponse.capability()
             case .expansion(let typeName, let role, let syntax, let attributeSource, let parentSource):
                 do {
-                    response = MacroResponse.expansion(try SwiftestMacroExpansion.expand(
+                    let expanded = try SwiftestMacroExpansion.expand(
                         typeName: typeName,
                         role: role,
                         source: syntax.source,
                         attributeSource: attributeSource,
                         parentSource: parentSource
-                    ))
+                    )
+                    if let expansionRole = MacroExpansionRole(rawValue: role) {
+                        switch MacroExpansionLawGate.inspect(expanded, role: expansionRole) {
+                        case .accepted:
+                            response = MacroResponse.expansion(expanded)
+                        case .rejected(let violations):
+                            let codes = Set(violations.map { $0.law.rawValue }).sorted().joined(separator: ",")
+                            response = MacroResponse.error(
+                                "macro expansion violates Swiftest laws: " + codes,
+                                location: syntax.location
+                            )
+                        }
+                    } else {
+                        response = MacroResponse.error("unknown macro expansion role", location: syntax.location)
+                    }
                 } catch let error {
                     response = MacroResponse.error(error.message, location: syntax.location)
                 }

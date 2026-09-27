@@ -201,6 +201,103 @@ public struct World: Hashable, Sendable {
     }
 }
 
+public struct WorldDefinition: Hashable, Sendable {
+    public let id: WorldID
+    public let build: BuildConfiguration
+    public let operatingSystem: AppleOperatingSystem
+    public let device: DeviceProfile
+    public let locale: LocaleScenario
+    public let layoutDirection: LayoutDirection
+    public let appearance: Appearance
+    public let accessibility: AccessibilityScenario
+    public let permission: PermissionScenario
+    public let location: LocationScenario
+    public let biometrics: BiometricScenario
+    public let lifecycle: LifecycleScenario
+    public let data: DataScenario
+    public let serviceFault: ServiceFault
+    public let cancellation: CancellationScenario
+    public let schedule: ScheduleScenario
+
+    public init(world: World) {
+        self.id = world.id
+        self.build = world.build
+        self.operatingSystem = world.operatingSystem
+        self.device = world.device
+        self.locale = world.locale
+        self.layoutDirection = world.layoutDirection
+        self.appearance = world.appearance
+        self.accessibility = world.accessibility
+        self.permission = world.permission
+        self.location = world.location
+        self.biometrics = world.biometrics
+        self.lifecycle = world.lifecycle
+        self.data = world.data
+        self.serviceFault = world.serviceFault
+        self.cancellation = world.cancellation
+        self.schedule = world.schedule
+    }
+
+    public var isPhysicallyPossible: Bool {
+        let expectedFamily: DeviceFamily = switch operatingSystem {
+        case .macOS: .mac
+        case .iOS: .phone
+        case .iPadOS: .tablet
+        case .tvOS: .television
+        case .watchOS: .watch
+        case .visionOS: .spatial
+        }
+        return device.family == expectedFamily && schedule.decisions.allSatisfy { $0 >= 0 }
+    }
+}
+
+public enum DeclaredWorld: Hashable, Sendable {
+    case modeled(WorldDefinition)
+    case unmodeledHost(WorldID)
+
+    public var id: WorldID {
+        switch self {
+        case .modeled(let definition): definition.id
+        case .unmodeledHost(let id): id
+        }
+    }
+}
+
+public struct DeclaredWorlds: Collection, Equatable, Sendable {
+    public typealias Element = WorldID
+    public typealias Index = Int
+
+    public let definitions: [DeclaredWorld]
+
+    private init(definitions: [DeclaredWorld]) {
+        self.definitions = definitions
+    }
+
+    public static func from(_ definitions: [DeclaredWorld]) -> Self {
+        Self(definitions: definitions)
+    }
+
+    public static func unmodeledHosts(_ ids: [WorldID]) -> Self {
+        Self(definitions: ids.map(DeclaredWorld.unmodeledHost))
+    }
+
+    public var startIndex: Int {
+        definitions.startIndex
+    }
+
+    public var endIndex: Int {
+        definitions.endIndex
+    }
+
+    public func index(after index: Int) -> Int {
+        definitions.index(after: index)
+    }
+
+    public subscript(position: Int) -> WorldID {
+        definitions[position].id
+    }
+}
+
 public struct NonInterferenceProof<Axis>: Hashable, Sendable {
     public let certificate: Digest
 

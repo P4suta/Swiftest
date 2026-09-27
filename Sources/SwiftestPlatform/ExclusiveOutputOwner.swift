@@ -8,6 +8,22 @@ private struct OwnedDescriptor: ~Copyable {
     }
 }
 
+private struct StagedOutput: ~Copyable {
+    let descriptor: OwnedDescriptor
+    let parent: Int32
+    let name: String
+
+    init(descriptor: Int32, parent: Int32, name: String) {
+        self.descriptor = OwnedDescriptor(value: descriptor)
+        self.parent = parent
+        self.name = name
+    }
+
+    deinit {
+        ABIAdapter.unlinkOutputOrTerminate(named: name, in: parent)
+    }
+}
+
 public struct ExclusiveOutputOwner: ~Copyable {
     private let parent: OwnedDescriptor
     private let name: String
@@ -47,18 +63,36 @@ public struct ExclusiveOutputOwner: ~Copyable {
     }
 
     public consuming func write(_ data: Data) throws(PlatformError) {
-        let descriptor: Int32
-        switch ABIAdapter.openNewOutput(named: name, in: parent.value) {
-        case .created(let value):
-            descriptor = value
-        case .present:
-            throw .outputExists(path)
-        case .unavailable:
-            throw .write(path)
+        let destination = path
+        do {
+            try self.writeValidated(data, validating: {})
+        } catch let error as PlatformError {
+            throw error
+        } catch {
+            throw .write(destination)
         }
-        let file = OwnedDescriptor(value: descriptor)
-        if !ABIAdapter.writeAll(data, to: file.value) || !ABIAdapter.synchronize(file.value) {
-            throw .write(path)
+    }
+
+    public consuming func writeValidated(_ data: Data, validating: () throws -> Void) throws {
+        guard let created = ABIAdapter.openTemporaryOutput(in: parent.value) else {
+            throw PlatformError.write(path)
+        }
+        let staged = StagedOutput(descriptor: created.descriptor, parent: parent.value, name: created.name)
+        if !ABIAdapter.writeAll(data, to: staged.descriptor.value)
+            || !ABIAdapter.synchronize(staged.descriptor.value) {
+            throw PlatformError.write(path)
+        }
+        try validating()
+        switch ABIAdapter.linkNewOutput(from: staged.name, to: name, in: parent.value) {
+        case .installed:
+            break
+        case .present:
+            throw PlatformError.outputExists(path)
+        case .unavailable:
+            throw PlatformError.write(path)
+        }
+        if !ABIAdapter.synchronize(parent.value) {
+            throw PlatformError.outputDurabilityUnconfirmed(path)
         }
     }
 }

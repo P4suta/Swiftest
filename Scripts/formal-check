@@ -8,9 +8,17 @@ mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
 cd "$project_root"
-swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal >"$scratch_root/trust.txt"
-lake --wfail build
-swift run --disable-sandbox --disable-index-store -j 4 swiftest review --formal-oracle >"$scratch_root/swift.txt"
-lake env lean --run SwiftestProofs/Oracle.lean >"$scratch_root/lean.txt"
+swift_driver=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift
+"$swift_driver" build --disable-sandbox --disable-index-store -j 4 --product swiftest
+swift_bin_dir=$("$swift_driver" build --show-bin-path)
+"$swift_bin_dir/swiftest" laws . --formal >"$scratch_root/trust.txt"
+lean_bin="$HOME/.elan/toolchains/leanprover--lean4---v4.34.1/bin"
+"$lean_bin/lake" --rehash --wfail build
+"$lean_bin/lake" env "$lean_bin/leanchecker" --fresh SwiftestProofs
+"$lean_bin/lake" env "$lean_bin/leanchecker" --fresh SwiftestProofs.Oracle
+"$swift_bin_dir/swiftest" review --formal-oracle >"$scratch_root/swift.txt"
+"$lean_bin/lake" env "$lean_bin/lean" --run SwiftestProofs/Oracle.lean >"$scratch_root/lean.txt"
 cmp "$scratch_root/swift.txt" "$scratch_root/lean.txt"
+echo "oracle-differential=passed"
+"$swift_bin_dir/swiftest" laws . --formal >"$scratch_root/trust.txt"
 echo "formal=passed"

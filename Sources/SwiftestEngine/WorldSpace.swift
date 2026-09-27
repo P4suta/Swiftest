@@ -1,13 +1,18 @@
+import Foundation
 import SwiftestModel
 
 public enum WorldSpaceError: Error, Equatable, Sendable {
     case emptyAxis(String)
     case worldCountOverflow
+    case identityEncodingOverflow
+    case identityDigest(DigestError)
 }
 
-fileprivate struct AxisCardinality {
-    let name: String
-    let count: Int
+fileprivate struct WorldAxisPlan {
+    let definition: Digest
+    let definitionPayload: Data
+    let count: EvidenceCount
+    let mutantCount: Int
 }
 
 public struct WorldSpace: Hashable, Sendable {
@@ -65,118 +70,225 @@ public struct WorldSpace: Hashable, Sendable {
     }
 
     public func executionCount() throws(WorldSpaceError) -> EvidenceCount {
-        let cardinalities = axisCardinalities()
-        var product = 1
-        for axis in cardinalities {
-            if axis.count == 0 {
-                throw .emptyAxis(axis.name)
-            }
-            let multiplication = product.multipliedReportingOverflow(by: axis.count)
-            if multiplication.overflow {
-                throw .worldCountOverflow
-            }
-            product = multiplication.partialValue
+        try axisPlan().count
+    }
+
+    public func allWorlds() throws(WorldSpaceError) -> WorldSequence {
+        let plan = try axisPlan()
+        return WorldSequence(
+            space: self,
+            plan: plan
+        )
+    }
+
+    private func axisPlan() throws(WorldSpaceError) -> WorldAxisPlan {
+        var encoder = try WorldDefinitionEncoder()
+        try encoder.appendRawAxis("build", builds)
+        try encoder.appendRawAxis("operating-system", operatingSystems)
+        try encoder.appendAxis("device", devices) { (encoder: inout WorldDefinitionEncoder, value: DeviceProfile) throws(WorldSpaceError) in
+            try encoder.appendString(value.id.rawValue)
+            try encoder.appendString(value.family.rawValue)
         }
+        try encoder.appendRawAxis("locale", locales)
+        try encoder.appendRawAxis("layout-direction", layoutDirections)
+        try encoder.appendRawAxis("appearance", appearances)
+        try encoder.appendRawAxis("accessibility", accessibilityScenarios)
+        try encoder.appendAxis("permission", permissions) { (encoder: inout WorldDefinitionEncoder, value: PermissionScenario) throws(WorldSpaceError) in
+            try encoder.appendString(value.kind.rawValue)
+            try encoder.appendString(value.state.rawValue)
+        }
+        try encoder.appendRawAxis("location", locations)
+        try encoder.appendRawAxis("biometrics", biometrics)
+        try encoder.appendRawAxis("lifecycle", lifecycles)
+        try encoder.appendRawAxis("data", dataScenarios)
+        try encoder.appendRawAxis("service-fault", serviceFaults)
+        try encoder.appendRawAxis("cancellation", cancellations)
+        try encoder.appendAxis("schedule", schedules) { (encoder: inout WorldDefinitionEncoder, value: ScheduleScenario) throws(WorldSpaceError) in
+            try encoder.appendString(value.id.rawValue)
+            try encoder.appendLength(value.decisions.count)
+            for decision in value.decisions {
+                try encoder.appendString(String(decision))
+            }
+        }
+        let mutantCount = try encoder.appendMutants(mutants)
+        return try encoder.plan(mutantCount: mutantCount)
+    }
+}
+
+private struct WorldDefinitionEncoder {
+    private var bytes = Data()
+    private var worldCount = 1
+
+    init() throws(WorldSpaceError) {
+        try appendString("swiftest.world-definition.v1")
+    }
+
+    mutating func appendString(_ value: String) throws(WorldSpaceError) {
+        let encoded = Array(value.utf8)
+        try appendLength(encoded.count)
+        bytes.append(contentsOf: encoded)
+    }
+
+    mutating func appendLength(_ value: Int) throws(WorldSpaceError) {
+        guard let length = UInt64(exactly: value) else {
+            throw .identityEncodingOverflow
+        }
+        for shift in stride(from: 56, through: 0, by: -8) {
+            bytes.append(UInt8((length >> UInt64(shift)) & 0xff))
+        }
+    }
+
+    mutating func appendRawAxis<Value: RawRepresentable & Hashable & Sendable>(
+        _ name: String,
+        _ selection: AxisSelection<Value>
+    ) throws(WorldSpaceError) where Value.RawValue == String {
+        try appendAxis(name, selection) { (encoder: inout WorldDefinitionEncoder, value: Value) throws(WorldSpaceError) in
+            try encoder.appendString(value.rawValue)
+        }
+    }
+
+    mutating func appendAxis<Value: Hashable & Sendable>(
+        _ name: String,
+        _ selection: AxisSelection<Value>,
+        encode: (inout WorldDefinitionEncoder, Value) throws(WorldSpaceError) -> Void
+    ) throws(WorldSpaceError) {
+        try appendCardinality(name: name, count: selection.executionValues.count)
+        try appendString(name)
+        switch selection {
+        case .enumerated(let values):
+            bytes.append(0)
+            try appendLength(values.count)
+            for value in values {
+                try encode(&self, value)
+            }
+        case .proven(let representative, let proof):
+            bytes.append(1)
+            try encode(&self, representative)
+            try appendString(proof.certificate.rawValue)
+        }
+    }
+
+    mutating func appendMutants(_ selection: AxisSelection<MutantSelection>) throws(WorldSpaceError) -> Int {
+        let count = selection.executionValues.count
+        try appendCardinality(name: "mutant", count: count)
+        return count
+    }
+
+    private mutating func appendCardinality(name: String, count: Int) throws(WorldSpaceError) {
+        if count == 0 {
+            throw .emptyAxis(name)
+        }
+        let multiplication = worldCount.multipliedReportingOverflow(by: count)
+        if multiplication.overflow {
+            throw .worldCountOverflow
+        }
+        worldCount = multiplication.partialValue
+    }
+
+    func plan(mutantCount: Int) throws(WorldSpaceError) -> WorldAxisPlan {
         do {
-            return try EvidenceCount.nonnegative(product)
+            let definitionPayload = bytes
+            return try WorldAxisPlan(
+                definition: Digest.sha256(definitionPayload),
+                definitionPayload: definitionPayload,
+                count: EvidenceCount.nonnegative(worldCount),
+                mutantCount: mutantCount
+            )
+        } catch let error as DigestError {
+            throw .identityDigest(error)
         } catch {
             throw .worldCountOverflow
         }
     }
-
-    public func allWorlds() throws(WorldSpaceError) -> WorldSequence {
-        let count = try executionCount().rawValue
-        return WorldSequence(space: self, count: count)
-    }
-
-    fileprivate func axisCardinalities() -> [AxisCardinality] {
-        [
-            AxisCardinality(name: "build", count: builds.executionValues.count),
-            AxisCardinality(name: "operating-system", count: operatingSystems.executionValues.count),
-            AxisCardinality(name: "device", count: devices.executionValues.count),
-            AxisCardinality(name: "locale", count: locales.executionValues.count),
-            AxisCardinality(name: "layout-direction", count: layoutDirections.executionValues.count),
-            AxisCardinality(name: "appearance", count: appearances.executionValues.count),
-            AxisCardinality(name: "accessibility", count: accessibilityScenarios.executionValues.count),
-            AxisCardinality(name: "permission", count: permissions.executionValues.count),
-            AxisCardinality(name: "location", count: locations.executionValues.count),
-            AxisCardinality(name: "biometrics", count: biometrics.executionValues.count),
-            AxisCardinality(name: "lifecycle", count: lifecycles.executionValues.count),
-            AxisCardinality(name: "data", count: dataScenarios.executionValues.count),
-            AxisCardinality(name: "service-fault", count: serviceFaults.executionValues.count),
-            AxisCardinality(name: "cancellation", count: cancellations.executionValues.count),
-            AxisCardinality(name: "schedule", count: schedules.executionValues.count),
-            AxisCardinality(name: "mutant", count: mutants.executionValues.count),
-        ]
-    }
 }
 
 public struct WorldSequence: Sequence, Sendable {
-    public let count: Int
     private let space: WorldSpace
+    private let plan: WorldAxisPlan
 
-    fileprivate init(space: WorldSpace, count: Int) {
+    var definitionPayload: Data {
+        plan.definitionPayload
+    }
+
+    public var executionCount: EvidenceCount {
+        plan.count
+    }
+
+    public var count: Int {
+        plan.count.rawValue
+    }
+
+    fileprivate init(space: WorldSpace, plan: WorldAxisPlan) {
         self.space = space
-        self.count = count
+        self.plan = plan
     }
 
     public func makeIterator() -> WorldIterator {
-        WorldIterator(space: space, count: count)
+        WorldIterator(space: space, plan: plan)
+    }
+}
+
+private struct CartesianCursor {
+    let ordinal: Int
+    private var stride: Int
+
+    init(total: Int, ordinal: Int) {
+        self.ordinal = ordinal
+        self.stride = total
+    }
+
+    mutating func take<Value: Hashable & Sendable>(_ selection: AxisSelection<Value>) -> Value {
+        let values = selection.executionValues
+        stride /= values.count
+        return values[(ordinal / stride) % values.count]
     }
 }
 
 public struct WorldIterator: IteratorProtocol {
     private let space: WorldSpace
-    private let counts: [Int]
-    private var indices: [Int]
-    private let count: Int
+    private let plan: WorldAxisPlan
     private var position: Int
 
-    fileprivate init(space: WorldSpace, count: Int) {
+    fileprivate init(space: WorldSpace, plan: WorldAxisPlan) {
         self.space = space
-        self.counts = space.axisCardinalities().map(\.count)
-        self.indices = Array(repeating: 0, count: counts.count)
-        self.count = count
+        self.plan = plan
         self.position = 0
     }
 
-    public mutating func next() -> World? {
-        if position == count {
-            return nil
+    mutating func skip(_ distance: EvidenceCount) {
+        let remaining = plan.count.rawValue - position
+        if distance.rawValue >= remaining {
+            position = plan.count.rawValue
+        } else {
+            position += distance.rawValue
         }
-        let world = World(
-            id: WorldID.ordinal(UInt(position)),
-            build: space.builds.executionValues[indices[0]],
-            operatingSystem: space.operatingSystems.executionValues[indices[1]],
-            device: space.devices.executionValues[indices[2]],
-            locale: space.locales.executionValues[indices[3]],
-            layoutDirection: space.layoutDirections.executionValues[indices[4]],
-            appearance: space.appearances.executionValues[indices[5]],
-            accessibility: space.accessibilityScenarios.executionValues[indices[6]],
-            permission: space.permissions.executionValues[indices[7]],
-            location: space.locations.executionValues[indices[8]],
-            biometrics: space.biometrics.executionValues[indices[9]],
-            lifecycle: space.lifecycles.executionValues[indices[10]],
-            data: space.dataScenarios.executionValues[indices[11]],
-            serviceFault: space.serviceFaults.executionValues[indices[12]],
-            cancellation: space.cancellations.executionValues[indices[13]],
-            schedule: space.schedules.executionValues[indices[14]],
-            mutant: space.mutants.executionValues[indices[15]]
-        )
-        position += 1
-        if position < count {
-            advance()
-        }
-        return world
     }
 
-    private mutating func advance() {
-        for axis in indices.indices.reversed() {
-            indices[axis] += 1
-            if indices[axis] < counts[axis] {
-                return
-            }
-            indices[axis] = 0
+    public mutating func next() -> World? {
+        if position == plan.count.rawValue {
+            return nil
         }
+        var cursor = CartesianCursor(total: plan.count.rawValue, ordinal: position)
+        let world = World(
+            id: WorldID.baseWorld(definition: plan.definition, ordinal: UInt(position / plan.mutantCount)),
+            build: cursor.take(space.builds),
+            operatingSystem: cursor.take(space.operatingSystems),
+            device: cursor.take(space.devices),
+            locale: cursor.take(space.locales),
+            layoutDirection: cursor.take(space.layoutDirections),
+            appearance: cursor.take(space.appearances),
+            accessibility: cursor.take(space.accessibilityScenarios),
+            permission: cursor.take(space.permissions),
+            location: cursor.take(space.locations),
+            biometrics: cursor.take(space.biometrics),
+            lifecycle: cursor.take(space.lifecycles),
+            data: cursor.take(space.dataScenarios),
+            serviceFault: cursor.take(space.serviceFaults),
+            cancellation: cursor.take(space.cancellations),
+            schedule: cursor.take(space.schedules),
+            mutant: cursor.take(space.mutants)
+        )
+        position += 1
+        return world
     }
 }

@@ -10,30 +10,42 @@ module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+swift build --disable-sandbox --disable-index-store -j 4 --package-path "$project_root" --product swiftest
+swiftest_bin_dir=$(swift build --disable-sandbox --disable-index-store -j 4 --package-path "$project_root" --show-bin-path)
+swiftest_bin="$swiftest_bin_dir/swiftest"
+test -x "$swiftest_bin"
+seal_tree() {
+    find "$1" -type f ! -path '*/.git/*' ! -path '*/.build/*' ! -path '*/.lake/*' ! -path '*/.swiftpm/*' ! -path '*/DerivedData/*' -exec shasum -a 256 {} \; | LC_ALL=C sort >"$2"
+}
+self_before="$scratch_root/self-before"
+self_after="$scratch_root/self-after"
+seal_tree "$project_root" "$self_before"
 cd "$project_root"
-swift run --disable-sandbox --disable-index-store -j 4 swiftest verify "$project_root" --allow-gaps --output "$scratch_root/swiftest.json"
+"$swiftest_bin" verify "$project_root" --self-laws --allow-gaps --output "$scratch_root/swiftest.json"
 grep -Fq '"verdict":"GAPS+UNSETTLED"' "$scratch_root/swiftest.json"
-if swift run --disable-sandbox --disable-index-store -j 4 swiftest replay "$scratch_root/swiftest.json"
+if "$swiftest_bin" replay "$scratch_root/swiftest.json"
 then
     exit 1
 fi
+seal_tree "$project_root" "$self_after"
+cmp "$self_before" "$self_after"
 if test -d "$fast_anser_root"
 then
     fast_before="$scratch_root/fast-before"
     fast_after="$scratch_root/fast-after"
-    find "$fast_anser_root" -type f ! -path '*/.git/*' ! -path '*/.build/*' ! -path '*/DerivedData/*' -exec shasum -a 256 {} \; | LC_ALL=C sort >"$fast_before"
-    if swift run --disable-sandbox --disable-index-store -j 4 swiftest verify "$fast_anser_root" --allow-gaps --output "$scratch_root/fast-anser.json"
+    seal_tree "$fast_anser_root" "$fast_before"
+    if "$swiftest_bin" verify "$fast_anser_root" --allow-gaps --output "$scratch_root/fast-anser.json"
     then
         :
     else
         test -f "$scratch_root/fast-anser.json"
     fi
     grep -Fq '"verdict":"GAPS+UNSETTLED"' "$scratch_root/fast-anser.json"
-    if swift run --disable-sandbox --disable-index-store -j 4 swiftest replay "$scratch_root/fast-anser.json"
+    if "$swiftest_bin" replay "$scratch_root/fast-anser.json"
     then
         exit 1
     fi
-    find "$fast_anser_root" -type f ! -path '*/.git/*' ! -path '*/.build/*' ! -path '*/DerivedData/*' -exec shasum -a 256 {} \; | LC_ALL=C sort >"$fast_after"
+    seal_tree "$fast_anser_root" "$fast_after"
     cmp "$fast_before" "$fast_after"
 else
     echo "dogfood-external=unavailable"

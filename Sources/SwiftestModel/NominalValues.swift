@@ -91,8 +91,8 @@ public struct WorldID: Hashable, Sendable, CustomStringConvertible {
         return WorldID(rawValue: value)
     }
 
-    public static func ordinal(_ value: UInt) -> WorldID {
-        WorldID(rawValue: "world-" + String(value))
+    package static func baseWorld(definition: Digest, ordinal: UInt) -> WorldID {
+        WorldID(rawValue: "world-v1-" + definition.rawValue + "-" + String(ordinal))
     }
 
     public var description: String { rawValue }

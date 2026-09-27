@@ -173,6 +173,26 @@ public enum LawFixtureCatalog {
             illegal: "withUnsafeBytes(of: value) { body($0) }\n"
         ),
         LawFixture(
+            law: .vnodeEventProtocol,
+            legal: "enum ABIAdapter { private static func makeVnodeRegistration(descriptor: Int32, mutationFlags: UInt32) -> Darwin.kevent64_s { Darwin.kevent64_s(ident: UInt64(descriptor), filter: Int16(EVFILT_VNODE), flags: UInt16(EV_ADD | EV_ENABLE | EV_CLEAR), fflags: mutationFlags, data: 0, udata: 0, ext: (0, 0)) } }\n",
+            illegal: "enum ABIAdapter { private static func makeVnodeRegistration(descriptor: Int32, mutationFlags: UInt32) -> Darwin.kevent64_s { Darwin.kevent64_s(ident: UInt64(descriptor), filter: Int16(EVFILT_VNODE), flags: UInt16(EV_ADD | EV_ENABLE), fflags: mutationFlags, data: 0, udata: 0, ext: (0, 0)) } }\n"
+        ),
+        LawFixture(
+            law: .catalogSerialization,
+            legal: "enum ReportCodec { private static func catalogValue(_ catalog: EvidenceCatalog) -> JSONValue { return .object([\"run\": .string(catalog.run.rawValue)]) } }\n",
+            illegal: "enum ReportCodec { private static func catalogValue(_ catalog: EvidenceCatalog) -> JSONValue { return .object([:]) } }\n"
+        ),
+        LawFixture(
+            law: .eventGenerationWitness,
+            legal: "health.recordAttributeEvent(at: path)",
+            illegal: "health.snapshot"
+        ),
+        LawFixture(
+            law: .faultObservationProvenance,
+            legal: "func run() { let process = SwiftPackageTargetObserver.denialReceipt(.processDenied); let evidence = SwiftPackageTargetObserver.denialReceipt(.evidence); return denialReceipt.close(activation: activation, observedOutcome: outcome) }\n",
+            illegal: "func run() { return .handled([FaultActivationObservation(point: point, result: .failedClosed)]) }\n"
+        ),
+        LawFixture(
             law: .toolchainMismatch,
             legal: "Apple Swift version 6.4",
             illegal: "Apple Swift version 6.3"
@@ -183,4 +203,10 @@ public enum LawFixtureCatalog {
             illegal: "Lean unavailable"
         ),
     ]
+
+    public static let claimDefinitionEncoding = LawFixture(
+        law: .catalogSerialization,
+        legal: "enum ReportCodec { private static func catalogValue(_ catalog: EvidenceCatalog) -> JSONValue { return .object([\"preservationClaims\": .array(catalog.preservationClaims.definitions.map { claim in .object([\"id\": .string(claim.id.rawValue), \"name\": .string(claim.name)]) })]) } }\n",
+        illegal: "enum ReportCodec { private static func catalogValue(_ catalog: EvidenceCatalog) -> JSONValue { return .object([\"preservationClaims\": .array(catalog.preservationClaims.definitions.map { claim in .object([\"id\": .string(claim.id.rawValue)]) })]) } }\n"
+    )
 }

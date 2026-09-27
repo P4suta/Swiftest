@@ -31,6 +31,34 @@ public enum FaultedStoreReadResult: Sendable {
 }
 
 public enum FaultedBoundaries {
+    public static func processPinnedApple(
+        point: FaultPointID,
+        injector: inout FaultInjector,
+        executable: String,
+        arguments: [String],
+        workingDirectory: String,
+        scratch: borrowing ScratchDirectoryOwner
+    ) throws(PlatformError) -> FaultedProcessResult {
+        let evaluation: FaultBoundaryEvaluation<ProcessOutput> = try FaultInjectionBoundary.evaluate(
+            point: point,
+            injector: &injector,
+            operation: { () throws(PlatformError) -> ProcessOutput in
+                try ProcessBoundary.runPinnedApple(
+                    executable: executable,
+                    arguments: arguments,
+                    workingDirectory: workingDirectory,
+                    scratch: scratch
+                )
+            }
+        )
+        switch evaluation {
+        case .completed(let output):
+            return .completed(output)
+        case .injected(_, let outcome):
+            return .injected(outcome)
+        }
+    }
+
     public static func process(
         point: FaultPointID,
         injector: inout FaultInjector,

@@ -31,6 +31,10 @@ public enum LawCode: String, CaseIterable, Hashable, Sendable {
     case directRandomness = "adapter.randomness"
     case directFileWrite = "adapter.file-write"
     case unsafeOutsideBoundary = "unsafe.outside-boundary"
+    case vnodeEventProtocol = "adapter.vnode-event-protocol"
+    case catalogSerialization = "report.catalog-serialization"
+    case eventGenerationWitness = "adapter.event-generation-witness"
+    case faultObservationProvenance = "fault.observation-provenance"
     case toolchainMismatch = "toolchain.mismatch"
     case missingExternalProof = "proof.external-missing"
 }

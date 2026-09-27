@@ -19,32 +19,169 @@ func worldSpaceEnumeratesEveryDeclaredCombination() throws {
 }
 
 @Test
-func worldSpaceStreamsAnExtremelyLargeCartesianProduct() throws {
-    func four<Value: Hashable & Sendable>(_ value: Value) -> AxisSelection<Value> {
-        .enumerated(Array(repeating: value, count: 4))
+func worldDefinitionPreimageIsTheBytesHashedIntoWorldID() throws {
+    let worlds = try worldSpace().allWorlds()
+    var iterator = worlds.makeIterator()
+    let candidate = iterator.next()
+    let first = try #require(candidate)
+    let components = first.id.rawValue.split(separator: "-", omittingEmptySubsequences: false)
+    guard components.count == 4 else {
+        Issue.record("world ID has no definition digest")
+        return
     }
-    let base = try worldSpace()
-    let space = WorldSpace(
-        builds: four(base.builds.executionValues[0]),
-        operatingSystems: four(base.operatingSystems.executionValues[0]),
-        devices: four(base.devices.executionValues[0]),
-        locales: four(base.locales.executionValues[0]),
-        layoutDirections: four(base.layoutDirections.executionValues[0]),
-        appearances: four(base.appearances.executionValues[0]),
-        accessibilityScenarios: four(base.accessibilityScenarios.executionValues[0]),
-        permissions: four(base.permissions.executionValues[0]),
-        locations: four(base.locations.executionValues[0]),
-        biometrics: four(base.biometrics.executionValues[0]),
-        lifecycles: four(base.lifecycles.executionValues[0]),
-        dataScenarios: four(base.dataScenarios.executionValues[0]),
-        serviceFaults: four(base.serviceFaults.executionValues[0]),
-        cancellations: four(base.cancellations.executionValues[0]),
-        schedules: four(base.schedules.executionValues[0]),
-        mutants: four(base.mutants.executionValues[0])
+    let digest = try Digest.sha256(worlds.definitionPayload)
+    #expect(components[2] == digest.rawValue)
+}
+
+@Test
+func worldSpaceCursorEnumeratesUnequalAxesAndMutantPairs() throws {
+    struct Combination: Hashable {
+        let build: BuildConfiguration
+        let locale: LocaleScenario
+        let appearance: Appearance
+        let permission: PermissionScenario
+    }
+
+    let mutant = try MutantID.parse("mutant-1")
+    let builds: [BuildConfiguration] = [.debug, .release]
+    let locales: [LocaleScenario] = [.englishUnitedStates, .japaneseJapan, .arabicSaudiArabia]
+    let appearances: [Appearance] = [.light, .dark]
+    let permissions = [
+        PermissionScenario(kind: .camera, state: .granted),
+        PermissionScenario(kind: .camera, state: .denied),
+    ]
+    let space = try worldSpace(
+        builds: builds,
+        locales: locales,
+        appearances: appearances,
+        permissions: permissions,
+        mutants: [.clean, .mutant(mutant)]
     )
+    let worlds = Array(try space.allWorlds())
+    #expect(worlds.count == 48)
+    #expect(Set(worlds.map(\.build)) == Set(builds))
+    #expect(Set(worlds.map(\.locale)).count == 3)
+    let cleanWorlds = worlds.filter { $0.mutant == .clean }
+    let actual = cleanWorlds.map {
+        Combination(build: $0.build, locale: $0.locale, appearance: $0.appearance, permission: $0.permission)
+    }
+    var expected: [Combination] = []
+    for build in builds {
+        for locale in locales {
+            for appearance in appearances {
+                for permission in permissions {
+                    expected.append(Combination(
+                        build: build,
+                        locale: locale,
+                        appearance: appearance,
+                        permission: permission
+                    ))
+                }
+            }
+        }
+    }
+    #expect(actual == expected)
+    #expect(Set(actual).count == 24)
+    #expect(Set(worlds.map(\.id)).count == 24)
+    for pair in stride(from: 0, to: worlds.count, by: 2) {
+        #expect(worlds[pair].id == worlds[pair + 1].id)
+        #expect(worlds[pair].mutant == .clean)
+        #expect(worlds[pair + 1].mutant == .mutant(mutant))
+    }
+}
+
+@Test
+func worldSpaceStreamsAnExtremelyLargeCartesianProduct() throws {
+    let space = try repeatedWorldSpace(multiplicity: 4)
     let worlds = try space.allWorlds()
     #expect(worlds.count == 4_294_967_296)
-    #expect(Array(worlds.prefix(2)).map(\.id.rawValue) == ["world-0", "world-1"])
+    let firstFive = Array(worlds.prefix(5)).map(\.id)
+    let first = try #require(firstFive.first)
+    let last = try #require(firstFive.last)
+    #expect(firstFive.count == 5)
+    #expect(first.rawValue.hasPrefix("world-v1-"))
+    #expect(Set(firstFive.prefix(4)) == [first])
+    #expect(first != last)
+}
+
+@Test
+func worldSpaceIteratorReachesTheLastWorldOfAnExtremelyLargeProduct() throws {
+    let worlds = try repeatedWorldSpace(multiplicity: 4).allWorlds()
+    var iterator = worlds.makeIterator()
+    iterator.skip(try EvidenceCount.nonnegative(worlds.count - 1))
+    let candidate = iterator.next()
+    let last = try #require(candidate)
+    #expect(last.id.rawValue.hasSuffix("-1073741823"))
+    let exhausted = iterator.next()
+    #expect(exhausted == nil)
+    iterator.skip(try EvidenceCount.nonnegative(1))
+    let stillExhausted = iterator.next()
+    #expect(stillExhausted == nil)
+}
+
+@Test
+func worldSpaceRejectsCartesianProductOverflow() throws {
+    let space = try repeatedWorldSpace(multiplicity: 16)
+    #expect(throws: WorldSpaceError.worldCountOverflow) {
+        try space.executionCount()
+    }
+    #expect(throws: WorldSpaceError.worldCountOverflow) {
+        try space.allWorlds()
+    }
+}
+
+@Test
+func worldIDsBindEveryNonMutantAxisAndEnumerationOrder() throws {
+    let baseline = try firstWorldID(try worldSpace())
+    let alternateSpaces = try [
+        worldSpace(builds: [.debug, .testing]),
+        worldSpace(operatingSystems: [.macOS]),
+        worldSpace(deviceID: "device-2"),
+        worldSpace(deviceFamily: .tablet),
+        worldSpace(locales: [.japaneseJapan]),
+        worldSpace(layoutDirections: [.rightToLeft]),
+        worldSpace(appearances: [.light, .light]),
+        worldSpace(accessibilityScenarios: [.voiceOver]),
+        worldSpace(permissions: [PermissionScenario(kind: .camera, state: .denied)]),
+        worldSpace(permissions: [PermissionScenario(kind: .microphone, state: .granted)]),
+        worldSpace(locations: [.moving]),
+        worldSpace(biometrics: [.fails]),
+        worldSpace(lifecycles: [.background]),
+        worldSpace(dataScenarios: [.malformed]),
+        worldSpace(serviceFaults: [.timeout]),
+        worldSpace(cancellations: [.duringOperation]),
+        worldSpace(scheduleID: "schedule-2"),
+        worldSpace(scheduleDecisions: [-1, 0, 1]),
+        worldSpace(builds: [.release, .debug]),
+    ]
+    for space in alternateSpaces {
+        #expect(try firstWorldID(space) != baseline)
+    }
+    #expect(Set(try alternateSpaces.map(firstWorldID)).count == alternateSpaces.count)
+}
+
+@Test
+func mutantVariantsShareTheirBaseWorldID() throws {
+    let mutant = try MutantID.parse("mutant-1")
+    let space = try worldSpace(mutants: [.clean, .mutant(mutant)])
+    let worlds = Array(try space.allWorlds().prefix(4))
+    #expect(worlds[0].mutant == .clean)
+    #expect(worlds[1].mutant == .mutant(mutant))
+    #expect(worlds[0].id == worlds[1].id)
+    #expect(worlds[0].id != worlds[2].id)
+    #expect(worlds[0].id == (try firstWorldID(worldSpace(mutants: [.mutant(mutant)]))))
+}
+
+@Test
+func worldIDsAreDeterministicAcrossIndependentSequences() throws {
+    let space = try worldSpace()
+    let first = Array(try space.allWorlds().map(\.id))
+    let second = Array(try space.allWorlds().map(\.id))
+    #expect(first == second)
+    #expect(first.count == 4)
+    for id in first {
+        #expect(try WorldID.parse(id.rawValue) == id)
+    }
 }
 
 @Test
@@ -107,14 +244,16 @@ func symbolicSilDistinguishesEquivalentAndDifferentMutants() throws {
 @Test
 func standardFaultCampaignCoversEveryDomainAndDeclaredScenario() throws {
     let campaign = try StandardFaultCampaign.make()
-    #expect(campaign.points.count == 22)
+    #expect(campaign.points.count == 26)
     #expect(campaign.compounds.count == 6)
-    #expect(campaign.scenarios.count == 29)
+    #expect(campaign.scenarios.count == 33)
     #expect(Set(campaign.points.map(\.domain)) == Set(FaultDomain.allCases))
+    let boundary = try StandardFaultCampaign.swiftPackageBoundaryScope()
+    #expect(Set(boundary.campaign.points.map(\.id)).isSubset(of: Set(campaign.points.map(\.id))))
     let transcript = standardFaultTranscript(campaign)
     let audit = try FaultAuditKernel.close(campaign: campaign, transcript: transcript)
-    #expect(audit.scenarioCount.rawValue == 29)
-    #expect(audit.injectedPointCount.rawValue == 34)
+    #expect(audit.scenarioCount.rawValue == 33)
+    #expect(audit.injectedPointCount.rawValue == 38)
 }
 
 @Test
@@ -552,13 +691,44 @@ func swiftTestingExecutableConsumesAProcessEventStream() throws {
 
 @Test
 func xcresultSummaryRejectsMalformedAndContradictoryTestEvidence() throws {
+    let deviceConfiguration = """
+    {"device":{"deviceId":"simulator","deviceName":"iPhone","architecture":"arm64","modelName":"iPhone","platform":"iOS Simulator","osVersion":"27.0"},"testPlanConfiguration":{"configurationId":"default","configurationName":"Default"},"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0}
+    """
     let valid = """
-    {"title":"Tests","environmentDescription":"iOS Simulator","topInsights":[],"result":"Passed","totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0,"statistics":[],"devicesAndConfigurations":{"device":{"deviceId":"simulator","deviceName":"iPhone","architecture":"arm64","modelName":"iPhone","platform":"iOS Simulator","osVersion":"27.0"},"testPlanConfiguration":{"configurationId":"default","configurationName":"Default"},"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0},"testFailures":[],"runtimeWarnings":[]}
+    {"title":"Tests","environmentDescription":"iOS Simulator","topInsights":[],"result":"Passed","totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0,"statistics":[],"devicesAndConfigurations":[\(deviceConfiguration)],"testFailures":[],"runtimeWarnings":[]}
     """
     let summary = try XCResultSummary.decode(Data(valid.utf8))
     #expect(summary.result == .passed)
     #expect(summary.total.rawValue == 1)
     #expect(summary.passed.rawValue == 1)
+    let emptyConfigurations = valid.replacingOccurrences(
+        of: "[\(deviceConfiguration)]",
+        with: "[]"
+    )
+    #expect(throws: XCResultSummaryError.ambiguousDeviceConfigurations(0)) {
+        try XCResultSummary.decode(Data(emptyConfigurations.utf8))
+    }
+    let multipleConfigurations = valid.replacingOccurrences(
+        of: "[\(deviceConfiguration)]",
+        with: "[\(deviceConfiguration),\(deviceConfiguration)]"
+    )
+    #expect(throws: XCResultSummaryError.ambiguousDeviceConfigurations(2)) {
+        try XCResultSummary.decode(Data(multipleConfigurations.utf8))
+    }
+    let directObject = valid.replacingOccurrences(
+        of: "[\(deviceConfiguration)]",
+        with: deviceConfiguration
+    )
+    #expect(throws: XCResultSummaryError.codec(.expectedArray("devicesAndConfigurations"))) {
+        try XCResultSummary.decode(Data(directObject.utf8))
+    }
+    let invalidConfiguration = valid.replacingOccurrences(
+        of: "[\(deviceConfiguration)]",
+        with: "[true]"
+    )
+    #expect(throws: XCResultSummaryError.codec(.expectedObject)) {
+        try XCResultSummary.decode(Data(invalidConfiguration.utf8))
+    }
     let emptyMetadata = valid.replacingOccurrences(
         of: "\"title\":\"Tests\"",
         with: "\"title\":\"\""
@@ -581,7 +751,7 @@ func xcresultSummaryRejectsMalformedAndContradictoryTestEvidence() throws {
         Issue.record("unknown xcresult field accepted")
         #expect(invalid.total.rawValue == 0)
     } catch let error {
-        #expect(error == .codec(.unknownField("unexamined")))
+        #expect(error == .identity(.codec(.unknownField("unexamined"))))
     }
     let duplicate = valid.replacingOccurrences(
         of: "\"totalTestCount\":1",
@@ -775,26 +945,77 @@ func propertyRunnerRejectsSelfCyclesAndIncreasingShrinks() throws {
     }
 }
 
-private func worldSpace() throws -> WorldSpace {
-    let device = DeviceProfile(id: try DeviceID.parse("device-1"), family: .phone)
-    let schedule = ScheduleScenario(id: try ScheduleID.parse("schedule-1"), decisions: [])
+private func repeatedWorldSpace(multiplicity: Int) throws -> WorldSpace {
+    func repeated<Value: Hashable & Sendable>(_ value: Value) -> AxisSelection<Value> {
+        .enumerated(Array(repeating: value, count: multiplicity))
+    }
+    var iterator = try worldSpace().allWorlds().makeIterator()
+    let candidate = iterator.next()
+    let first = try #require(candidate)
     return WorldSpace(
-        builds: .enumerated([.debug, .release]),
-        operatingSystems: .enumerated([.iOS]),
+        builds: repeated(first.build),
+        operatingSystems: repeated(first.operatingSystem),
+        devices: repeated(first.device),
+        locales: repeated(first.locale),
+        layoutDirections: repeated(first.layoutDirection),
+        appearances: repeated(first.appearance),
+        accessibilityScenarios: repeated(first.accessibility),
+        permissions: repeated(first.permission),
+        locations: repeated(first.location),
+        biometrics: repeated(first.biometrics),
+        lifecycles: repeated(first.lifecycle),
+        dataScenarios: repeated(first.data),
+        serviceFaults: repeated(first.serviceFault),
+        cancellations: repeated(first.cancellation),
+        schedules: repeated(first.schedule),
+        mutants: repeated(first.mutant)
+    )
+}
+
+private func firstWorldID(_ space: WorldSpace) throws -> WorldID {
+    var iterator = try space.allWorlds().makeIterator()
+    return try #require(iterator.next()?.id)
+}
+
+private func worldSpace(
+    builds: [BuildConfiguration] = [.debug, .release],
+    operatingSystems: [AppleOperatingSystem] = [.iOS],
+    deviceID: String = "device-1",
+    deviceFamily: DeviceFamily = .phone,
+    locales: [LocaleScenario] = [.englishUnitedStates],
+    layoutDirections: [LayoutDirection] = [.leftToRight],
+    appearances: [Appearance] = [.light, .dark],
+    accessibilityScenarios: [AccessibilityScenario] = [.standard],
+    permissions: [PermissionScenario] = [PermissionScenario(kind: .camera, state: .granted)],
+    locations: [LocationScenario] = [.fixed],
+    biometrics: [BiometricScenario] = [.succeeds],
+    lifecycles: [LifecycleScenario] = [.foreground],
+    dataScenarios: [DataScenario] = [.typical],
+    serviceFaults: [ServiceFault] = [.none],
+    cancellations: [CancellationScenario] = [.never],
+    scheduleID: String = "schedule-1",
+    scheduleDecisions: [Int] = [],
+    mutants: [MutantSelection] = [.clean]
+) throws -> WorldSpace {
+    let device = DeviceProfile(id: try DeviceID.parse(deviceID), family: deviceFamily)
+    let schedule = ScheduleScenario(id: try ScheduleID.parse(scheduleID), decisions: scheduleDecisions)
+    return WorldSpace(
+        builds: .enumerated(builds),
+        operatingSystems: .enumerated(operatingSystems),
         devices: .enumerated([device]),
-        locales: .enumerated([.englishUnitedStates]),
-        layoutDirections: .enumerated([.leftToRight]),
-        appearances: .enumerated([.light, .dark]),
-        accessibilityScenarios: .enumerated([.standard]),
-        permissions: .enumerated([PermissionScenario(kind: .camera, state: .granted)]),
-        locations: .enumerated([.fixed]),
-        biometrics: .enumerated([.succeeds]),
-        lifecycles: .enumerated([.foreground]),
-        dataScenarios: .enumerated([.typical]),
-        serviceFaults: .enumerated([.none]),
-        cancellations: .enumerated([.never]),
+        locales: .enumerated(locales),
+        layoutDirections: .enumerated(layoutDirections),
+        appearances: .enumerated(appearances),
+        accessibilityScenarios: .enumerated(accessibilityScenarios),
+        permissions: .enumerated(permissions),
+        locations: .enumerated(locations),
+        biometrics: .enumerated(biometrics),
+        lifecycles: .enumerated(lifecycles),
+        dataScenarios: .enumerated(dataScenarios),
+        serviceFaults: .enumerated(serviceFaults),
+        cancellations: .enumerated(cancellations),
         schedules: .enumerated([schedule]),
-        mutants: .enumerated([.clean])
+        mutants: .enumerated(mutants)
     )
 }
 

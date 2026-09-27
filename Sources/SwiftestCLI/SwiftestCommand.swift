@@ -19,26 +19,23 @@ enum CLICommand: String, CaseIterable {
     case migrate
     case fix
     case laws
-}
 
-struct CommandDescriptor {
-    let command: CLICommand
-    let summary: String
-
-    static let all: [CommandDescriptor] = [
-        CommandDescriptor(command: .verify, summary: "close evidence and emit a report"),
-        CommandDescriptor(command: .watch, summary: "verify the current source state"),
-        CommandDescriptor(command: .explain, summary: "derive help, verdicts, or schema"),
-        CommandDescriptor(command: .replay, summary: "strictly replay a recorded report"),
-        CommandDescriptor(command: .review, summary: "perform independent report review"),
-        CommandDescriptor(command: .doctor, summary: "audit pinned toolchains"),
-        CommandDescriptor(command: .shard, summary: "partition a complete ordinal domain"),
-        CommandDescriptor(command: .merge, summary: "merge reviewed report envelopes"),
-        CommandDescriptor(command: .snapshot, summary: "verify or explicitly record a snapshot"),
-        CommandDescriptor(command: .migrate, summary: "strictly migrate canonical wire data"),
-        CommandDescriptor(command: .fix, summary: "emit mechanically actionable law locations"),
-        CommandDescriptor(command: .laws, summary: "enforce all repository laws"),
-    ]
+    var summary: String {
+        switch self {
+        case .verify: "close evidence and emit a report"
+        case .watch: "verify the current source state"
+        case .explain: "derive help, verdicts, or schema"
+        case .replay: "strictly replay a recorded report"
+        case .review: "perform independent report review"
+        case .doctor: "audit pinned toolchains"
+        case .shard: "partition a complete ordinal domain"
+        case .merge: "merge reviewed report envelopes"
+        case .snapshot: "verify or explicitly record a snapshot"
+        case .migrate: "strictly migrate canonical wire data"
+        case .fix: "emit mechanically actionable law locations"
+        case .laws: "enforce all repository laws"
+        }
+    }
 }
 
 enum CLIError: Error {
@@ -61,6 +58,15 @@ enum CLIError: Error {
     case faultAudit(FaultAuditError)
     case outputInsideRepository(String)
     case outputExists(String)
+}
+
+struct InputEventWitness: Equatable {
+    let source: FileEventWitness
+    let snapshot: FileEventWitness
+
+    var continuity: FileEventContinuity {
+        source.continuity.joined(with: snapshot.continuity)
+    }
 }
 
 @main
@@ -112,8 +118,8 @@ struct SwiftestCommand {
     }
 
     static func help() -> String {
-        let commands = CommandDescriptor.all.map {
-            "  " + $0.command.rawValue + "\t" + $0.summary
+        let commands = CLICommand.allCases.map {
+            "  " + $0.rawValue + "\t" + $0.summary
         }.joined(separator: "\n")
         return "swiftest <command> [arguments]\n\n" + commands + "\n"
     }
@@ -143,8 +149,7 @@ struct SwiftestCommand {
             do {
                 try FormalVerification.verifyOracle(
                     root: repository,
-                    swiftOracle: VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
-                        + ArtifactPathOracle.text() + (try SATOracle.text())
+                    swiftOracle: try formalOracleText()
                 )
             } catch let error {
                 throw CLIError.formal(String(describing: error))
@@ -168,82 +173,107 @@ struct SwiftestCommand {
         } else {
             outputOwner = nil
         }
-        let initialSeal: Result<SourceTreeSeal, SourceTreeSealError>
-        do {
-            initialSeal = .success(try SourceTreeSeal.capture(root: repository))
-        } catch let error {
-            initialSeal = .failure(error)
-        }
+        try repositoryIdentity.verifyCurrentLocation()
+        let source = try SourceTreeSeal.captureLeased(root: repository)
+        var inputContinuity = try source.verifyUnchanged()
+        try repositoryIdentity.verifyCurrentLocation()
+        let snapshot = try SourceSnapshot(source: source.seal)
+        inputContinuity = inputContinuity.joined(with: try source.verifyUnchanged())
+        inputContinuity = inputContinuity.joined(with: try snapshot.verifyUnchanged())
         let lawReport: LawReport
-        let tests: TargetTestObservation
-        let sourceDigest: Digest?
-        do {
-            try repositoryIdentity.verifyCurrentLocation()
-            let seal = try initialSeal.get()
-            try seal.verifyUnchanged()
-            try repositoryIdentity.verifyCurrentLocation()
-            let snapshot = try SourceSnapshot(source: seal)
-            try seal.verifyUnchanged()
-            try snapshot.verifyUnchanged()
-            let scannedLaws = try LawScanner.scan(root: snapshot.root)
-            try snapshot.verifyUnchanged()
-            let observed: TargetTestObservation
-            if let diagnostic = toolchainFailure(root: snapshot.root) {
-                observed = .apparatus(diagnostic)
-            } else {
-                switch options.target {
-                case .automatic:
-                    let package = SwiftPackageTestDriver.observe(root: snapshot.root)
-                    if case .notConfigured = package {
-                        observed = XcodeTargetTestDriver.unconfiguredProject(root: snapshot.root)
-                    } else {
-                        observed = package
-                    }
-                case .xcode(let scheme, let destination, let project, let workspace):
-                    observed = XcodeTargetTestDriver.observe(
-                        root: snapshot.root,
-                        scheme: scheme,
-                        destination: destination,
-                        project: snapshot.rebasedContainer(project),
-                        workspace: snapshot.rebasedContainer(workspace)
-                    )
-                }
+        let lawObservations: [LawObservation]
+        switch options.lawDomain {
+        case .selfRepository:
+            lawReport = try LawScanner.scan(root: snapshot.root)
+            lawObservations = LawCode.allCases.map { law in
+                let failed = lawReport.violations.contains(where: { $0.law == law })
+                return LawObservation(code: law, status: failed ? .failed : .passed)
             }
-            try repositoryIdentity.verifyCurrentLocation()
-            try seal.verifyUnchanged()
-            try snapshot.verifyUnchanged()
-            try repositoryIdentity.verifyCurrentLocation()
-            sourceDigest = try snapshot.seal.manifestDigest()
-            lawReport = scannedLaws
-            tests = observed
-        } catch {
-            lawReport = try LawScanner.scan(root: repository)
-            sourceDigest = nil
-            tests = .apparatus(Diagnostic(
-                code: .apparatusFailed,
-                subject: "source-integrity",
-                detail: "source or snapshot changed during verification"
-            ))
+        case .externalSwiftPackage:
+            let assessment = try LawScanner.scanExternalSwiftPackage(root: snapshot.root)
+            lawReport = assessment.report
+            lawObservations = assessment.lawObservations
+        case .externalXcode:
+            let assessment = TargetLawAssessment.unassessedExternalXcode()
+            lawReport = assessment.report
+            lawObservations = assessment.lawObservations
         }
-        let report = try makeReport(lawReport, tests: tests, sourceDigest: sourceDigest)
+        inputContinuity = inputContinuity.joined(with: try snapshot.verifyUnchanged())
+        let tests: TargetTestObservation
+        let faultEvidence: FaultEvidence
+        if let diagnostic = toolchainFailure(root: snapshot.root) {
+            tests = .apparatus(diagnostic)
+            faultEvidence = .unverified
+        } else {
+            switch options.target {
+            case .automatic:
+                let package = SwiftPackageTestDriver.observeWithFaults(root: snapshot.root)
+                if case .notConfigured = package.tests {
+                    tests = XcodeTargetTestDriver.unconfiguredProject(root: snapshot.root)
+                    faultEvidence = .unverified
+                } else if let audit = package.boundaryFault,
+                    let resultDigest = package.tests.resultDigest {
+                    tests = package.tests
+                    faultEvidence = .partial(audit, targetEvidence: resultDigest)
+                } else {
+                    tests = package.tests
+                    faultEvidence = .unverified
+                }
+            case .xcode(let scheme, let destination, let project, let workspace):
+                tests = XcodeTargetTestDriver.observe(
+                    root: snapshot.root,
+                    scheme: scheme,
+                    destination: destination,
+                    project: snapshot.rebasedContainer(project),
+                    workspace: snapshot.rebasedContainer(workspace)
+                )
+                faultEvidence = .unverified
+            }
+        }
+        try repositoryIdentity.verifyCurrentLocation()
+        let reportInput = InputEventWitness(
+            source: try source.observeUnchanged(),
+            snapshot: try snapshot.observeUnchanged()
+        )
+        inputContinuity = inputContinuity.joined(with: reportInput.continuity)
+        try repositoryIdentity.verifyCurrentLocation()
+        let sourceDigest = try snapshot.seal.manifestDigest()
+        let report = try makeReport(
+            lawReport,
+            observations: lawObservations,
+            tests: tests,
+            sourceDigest: sourceDigest,
+            inputContinuity: inputContinuity,
+            faultEvidence: faultEvidence,
+            lawDomain: options.lawDomain
+        )
         let data: Data
         do {
             data = try ReportCodec.encode(report)
         } catch let error {
             throw CLIError.report(error)
         }
-        do {
+        let validateSource = {
             try repositoryIdentity.verifyCurrentLocation()
-        } catch let error {
-            throw CLIError.platform(error)
+            let finalInput = InputEventWitness(
+                source: try source.observeUnchanged(),
+                snapshot: try snapshot.observeUnchanged()
+            )
+            guard finalInput == reportInput else {
+                throw CLIError.platform(.lateInputEvent)
+            }
+            try repositoryIdentity.verifyCurrentLocation()
         }
         if let outputOwner {
             do {
-                try outputOwner.write(data)
-            } catch let error {
+                try outputOwner.writeValidated(data, validating: validateSource)
+            } catch let error as PlatformError {
                 throw outputError(error)
+            } catch {
+                throw error
             }
         } else {
+            try validateSource()
             guard let text = String(data: data, encoding: .utf8) else {
                 throw CLIError.usage("report-encoding")
             }
@@ -298,11 +328,7 @@ struct SwiftestCommand {
             return
         }
         if arguments == ["--formal-oracle"] {
-            print(
-                VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
-                    + ArtifactPathOracle.text() + (try SATOracle.text()),
-                terminator: ""
-            )
+            print(try formalOracleText(), terminator: "")
             return
         }
         guard arguments.count == 1 else {
@@ -311,6 +337,12 @@ struct SwiftestCommand {
         let envelope = try readEnvelope(arguments[0])
         print("review=unverified digest=" + envelope.catalogDigest.rawValue)
         throw CLIError.unverifiableReport(envelope.catalogDigest)
+    }
+
+    private static func formalOracleText() throws -> String {
+        VerdictOracle.text() + FaultOracle.text() + ReportVerdictOracle.text()
+            + ArtifactPathOracle.text() + (try SATOracle.text()) + (try LeaseOracle.text())
+            + (try LeaseWitnessOracle.text()) + (try WorldCursorOracle.text())
     }
 
     static func doctor(_ arguments: [String]) throws {
@@ -447,33 +479,80 @@ struct SwiftestCommand {
 
     static func makeReport(
         _ laws: LawReport,
+        observations: [LawObservation],
         tests: TargetTestObservation,
-        sourceDigest: Digest?
+        sourceDigest: Digest,
+        inputContinuity: FileEventContinuity,
+        faultEvidence: FaultEvidence,
+        lawDomain: VerifyLawDomain
     ) throws -> AssuredReport {
-        let encodedViolations = laws.violations.map {
-            $0.law.rawValue + ":" + $0.location.file
-        }.joined(separator: "\n")
-        let testIdentity: String
-        if let digest = tests.resultDigest {
-            testIdentity = digest.rawValue
-        } else {
-            testIdentity = "no-test-result"
+        var transcript = EvidenceTranscript()
+        transcript.append("swiftest-run-v3")
+        transcript.append(sourceDigest.rawValue)
+        transcript.append(inputContinuity.rawValue)
+        transcript.append(String(laws.checkedFiles.rawValue))
+        switch lawDomain {
+        case .selfRepository:
+            transcript.append("self-repository")
+        case .externalSwiftPackage:
+            transcript.append("external-swift-package")
+        case .externalXcode:
+            transcript.append("external-xcode")
         }
-        let sourceIdentity: String
-        if let sourceDigest {
-            sourceIdentity = sourceDigest.rawValue
-        } else {
-            sourceIdentity = "source-unverified"
+        transcript.append(String(laws.violations.count))
+        for violation in laws.violations {
+            transcript.append(violation.law.rawValue)
+            transcript.append(violation.location.file)
+            transcript.append(String(violation.location.line))
+            transcript.append(String(violation.location.column))
+            transcript.append(violation.subject)
+        }
+        transcript.append(String(observations.count))
+        for observation in observations {
+            transcript.append(observation.code.rawValue)
+            transcript.append(observation.status.rawValue)
+            if let diagnostic = observation.diagnostic {
+                transcript.append("diagnostic")
+                transcript.append(diagnostic.code.rawValue)
+                transcript.append(diagnostic.subject)
+                transcript.append(diagnostic.detail)
+            } else {
+                transcript.append("no-diagnostic")
+            }
+        }
+        switch tests {
+        case .notConfigured:
+            transcript.append("not-configured")
+        case .passed(let count, let digest):
+            transcript.append("passed")
+            transcript.append(String(count.rawValue))
+            transcript.append(digest.rawValue)
+        case .failed(let count, let digest):
+            transcript.append("failed")
+            transcript.append(String(count.rawValue))
+            transcript.append(digest.rawValue)
+        case .apparatus(let diagnostic):
+            transcript.append("apparatus")
+            transcript.append(diagnostic.code.rawValue)
+            transcript.append(diagnostic.subject)
+            transcript.append(diagnostic.detail)
+        }
+        switch faultEvidence {
+        case .unverified:
+            transcript.append("fault-unverified")
+        case .structural(let audit):
+            transcript.append("fault-structural")
+            transcript.append(audit.digest.rawValue)
+        case .partial(let audit, let targetEvidence):
+            transcript.append("fault-partial")
+            transcript.append(audit.digest.rawValue)
+            transcript.append(targetEvidence.rawValue)
         }
         let runDigest: Digest
         do {
-            runDigest = try Digest.sha256(Data((sourceIdentity + "\n" + encodedViolations + "\n" + testIdentity).utf8))
+            runDigest = try transcript.digest()
         } catch let error {
             throw CLIError.digest(error)
-        }
-        let observations = LawCode.allCases.map { law in
-            let failed = laws.violations.contains(where: { $0.law == law })
-            return LawObservation(code: law, status: failed ? .failed : .passed)
         }
         let run: RunID
         do {
@@ -508,9 +587,11 @@ struct SwiftestCommand {
         let catalog = EvidenceCatalog(
             run: run,
             scope: .complete,
-            preservationClaims: [],
-            detectionClaims: [],
-            worlds: worlds,
+            inputContinuity: inputContinuity,
+            runtimePipeline: .unverified,
+            preservationClaims: .from([]),
+            detectionClaims: .from([]),
+            worlds: .unmodeledHosts(worlds),
             mutants: [],
             claimObservations: [],
             mutationObservations: [],
@@ -527,7 +608,7 @@ struct SwiftestCommand {
             throw CLIError.audit(error)
         }
         do {
-            return try AssuredReport(catalog: closed, faultEvidence: .unverified)
+            return try AssuredReport(catalog: closed, faultEvidence: faultEvidence)
         } catch let error {
             throw CLIError.report(error)
         }

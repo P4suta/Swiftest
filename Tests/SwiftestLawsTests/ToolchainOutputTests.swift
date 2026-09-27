@@ -1,4 +1,5 @@
 @testable import SwiftestLaws
+import SwiftestPlatform
 import Testing
 
 @Test
@@ -21,4 +22,24 @@ func pinnedToolchainAuditAcceptsDiagnosticPreambleButRejectsAmbiguousVersions() 
         expected: "6.4",
         actual: swift + swift
     ).status == .mismatched)
+    let streams = ProcessOutput(
+        standardOutput: swift,
+        standardError: warning + swift,
+        exitCode: 0
+    )
+    #expect(ToolchainAudit.observation(
+        component: "Swift",
+        expected: "6.4",
+        actual: ToolchainAudit.versionText(streams)
+    ).status == .mismatched)
+    let splitStreams = ProcessOutput(
+        standardOutput: "Apple Swift version 6.4 (swiftlang-6.4.0)\nTarget: arm64-apple-macosx27.0.0\n",
+        standardError: warning + "swift-driver version: 1.168.6 ",
+        exitCode: 0
+    )
+    #expect(ToolchainAudit.observation(
+        component: "Swift",
+        expected: "6.4",
+        actual: ToolchainAudit.versionText(splitStreams)
+    ).status == .matched)
 }

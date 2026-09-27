@@ -13,15 +13,42 @@ struct LexedComment: Equatable {
     let text: String
 }
 
+struct OtherSourceScan: Equatable {
+    let comments: [LexedComment]
+    let unsupportedLeanRawStringOffset: Int?
+}
+
+enum LeanRawStringStart {
+    static func matches(_ bytes: [UInt8], at index: Int) -> Bool {
+        guard bytes[index] == 114 else {
+            return false
+        }
+        if index > 0 {
+            let preceding = bytes[index - 1]
+            if (preceding >= 65 && preceding <= 90)
+                || (preceding >= 97 && preceding <= 122)
+                || (preceding >= 48 && preceding <= 57)
+                || preceding == 95 || preceding == 39 || preceding >= 128 {
+                return false
+            }
+        }
+        var quote = index + 1
+        while quote < bytes.count && bytes[quote] == 35 {
+            quote += 1
+        }
+        return quote < bytes.count && bytes[quote] == 34
+    }
+}
+
 enum OtherSourceLexer {
-    static func comments(in source: String, flavor: SourceFlavor) -> [LexedComment] {
+    static func scan(in source: String, flavor: SourceFlavor) -> OtherSourceScan {
         switch flavor {
         case .hash:
-            hashComments(in: source)
+            OtherSourceScan(comments: hashComments(in: source), unsupportedLeanRawStringOffset: nil)
         case .lean:
             leanComments(in: source)
         case .json, .plain:
-            []
+            OtherSourceScan(comments: [], unsupportedLeanRawStringOffset: nil)
         }
     }
 
@@ -72,7 +99,7 @@ enum OtherSourceLexer {
         return comments
     }
 
-    private static func leanComments(in source: String) -> [LexedComment] {
+    private static func leanComments(in source: String) -> OtherSourceScan {
         let bytes = Array(source.utf8)
         var comments: [LexedComment] = []
         var index = 0
@@ -91,6 +118,9 @@ enum OtherSourceLexer {
                 }
                 index += 1
                 continue
+            }
+            if LeanRawStringStart.matches(bytes, at: index) {
+                return OtherSourceScan(comments: comments, unsupportedLeanRawStringOffset: index)
             }
             if byte == 34 {
                 inString = true
@@ -127,7 +157,7 @@ enum OtherSourceLexer {
             }
             index += 1
         }
-        return comments
+        return OtherSourceScan(comments: comments, unsupportedLeanRawStringOffset: nil)
     }
 
     private static func lineEnd(bytes: [UInt8], from start: Int) -> Int {

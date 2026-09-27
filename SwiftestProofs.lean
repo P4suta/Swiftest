@@ -1,4 +1,6 @@
 import SwiftestProofs.Faults
+import SwiftestProofs.Lease
+import SwiftestProofs.MutationGrid
 import SwiftestProofs.Path
 import SwiftestProofs.Shrink
 import SwiftestProofs.Pipeline

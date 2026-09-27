@@ -116,7 +116,7 @@ let package = Package(
         ),
         .macro(
             name: "SwiftestMacros",
-            dependencies: ["SwiftestCodec"],
+            dependencies: ["SwiftestCodec", "SwiftestLaws"],
             swiftSettings: hostSwiftSyntax,
             linkerSettings: hostSwiftSyntaxLinker,
             plugins: ["SwiftestLawsPlugin"]
@@ -177,6 +177,7 @@ let package = Package(
         .testTarget(
             name: "SwiftestEngineTests",
             dependencies: [
+                "SwiftestCodec",
                 "SwiftestEngine",
                 "SwiftestFaults",
                 "SwiftestModel",

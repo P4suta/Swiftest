@@ -176,7 +176,8 @@ private actor AttemptCounter {
 }
 
 private func verifyWorld(_ world: World) async throws {
-    #expect(world.id.rawValue == "world-0" || world.id.rawValue == "world-1")
+    #expect(world.id.rawValue.hasPrefix("world-v1-"))
+    #expect(try WorldID.parse(world.id.rawValue) == world.id)
     #expect(world.appearance == .light || world.appearance == .dark)
 }
 

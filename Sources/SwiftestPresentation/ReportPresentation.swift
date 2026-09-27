@@ -9,6 +9,8 @@ public enum ReportPresentation {
         switch report.faults {
         case .structural(let audit):
             faultSummary = "faults=structural scenarios=" + String(audit.scenarioCount.rawValue)
+        case .partial(let audit, _):
+            faultSummary = "faults=partial scenarios=" + String(audit.scenarioCount.rawValue)
         case .unverified:
             faultSummary = "faults=unverified"
         }

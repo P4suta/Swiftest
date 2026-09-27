@@ -20,20 +20,86 @@ private let pinnedLakeManifest = "{\"version\":\"1.2.0\",\"packagesDir\":\".lake
 
 @Test
 func leanTrustLexerDistinguishesProofTokensFromStringsAndComments() throws {
-    let legal = "def text := \"sorry admit axiom sorryAx\"\n"
+    let legal = "def text := \"sorry admit axiom sorryAx constant native_decide opaque\"\n"
         + "def nested := \"escaped \\\"sorry\\\"\"\n"
         + "def axiomName := 1\n"
         + "def not_sorry := 2\n"
         + "def sorryAxial := 3\n"
-        + "def «axiom» := 4\n"
-        + "/- sorry /- admit -/ axiom -/\n"
-        + "-- sorryAx\n"
+        + "/- sorry /- admit -/ axiom constant native_decide -/\n"
+        + "-- sorryAx unsafe opaque\n"
     try LeanTrust.inspectSource(legal, path: "Fixture.lean")
 }
 
 @Test
+func leanTrustRejectsQuotedIdentifierProofHole() {
+    let attacks = [
+        ("set_option warn.«sorry» false in\n", 17),
+        ("theorem fabricated : False := «sorryAx» False false\n", 31),
+    ]
+    for (source, column) in attacks {
+        do {
+            try LeanTrust.inspectSource(source, path: "Fixture.lean")
+            Issue.record("accepted quoted Lean proof hole")
+        } catch let error {
+            #expect(error == .quotedIdentifier(SourceLocation(file: "Fixture.lean", line: 1, column: column)))
+        }
+    }
+    do {
+        try LeanTrust.inspectSource("def «safeName» := 4\n", path: "Fixture.lean")
+        Issue.record("accepted quoted Lean identifier outside the proof hole")
+    } catch let error {
+        #expect(error == .quotedIdentifier(SourceLocation(file: "Fixture.lean", line: 1, column: 5)))
+    }
+}
+
+@Test
+func leanTrustRejectsRawStringBeforeItCanHideAnAxiom() throws {
+    let hiddenAxiom = #"""
+    def marker := r"\"
+    axiom hidden : False
+    def trailing := "\""
+    """# + "\n"
+    for source in [hiddenAxiom, "def marker := r###\"safe\"###\n"] {
+        do {
+            try LeanTrust.inspectSource(source, path: "Fixture.lean")
+            Issue.record("accepted unsupported Lean raw string")
+        } catch let error {
+            #expect(error == .unsupportedRawString(SourceLocation(file: "Fixture.lean", line: 1, column: 15)))
+        }
+    }
+    let ordinaryString = #"""
+    def marker := "r\"safe\""
+    """# + "\n"
+    try LeanTrust.inspectSource(ordinaryString, path: "Fixture.lean")
+}
+
+@Test
+func leanCommentScannerRejectsRawStringBeforeItCanHideAComment() {
+    let source = #"""
+    def marker := r"\"
+    -- hidden comment
+    def trailing := "\""
+    """# + "\n"
+    let scan = OtherSourceLexer.scan(in: source, flavor: .lean)
+    #expect(scan.unsupportedLeanRawStringOffset == 14)
+    #expect(scan.comments.isEmpty)
+    let ordinaryString = #"""
+    def marker := "r\"safe\""
+    -- visible comment
+    """# + "\n"
+    let ordinary = OtherSourceLexer.scan(in: ordinaryString, flavor: .lean)
+    #expect(ordinary.unsupportedLeanRawStringOffset == nil)
+    #expect(ordinary.comments.map(\.text) == ["-- visible comment"])
+}
+
+@Test
 func leanTrustLexerRejectsEveryStandaloneProofHole() {
-    for token in ["sorry", "admit", "axiom", "sorryAx"] {
+    for token in [
+        "sorry", "admit", "axiom", "sorryAx", "constant", "opaque", "unsafe",
+        "native", "native_decide", "bv_decide", "implemented_by", "trustCompiler",
+        "reduceBool", "reduceNat", "ofReduceBool", "ofReduceNat", "partial",
+        "partial_fixpoint", "macro", "syntax", "elab", "elab_rules", "run_tac",
+    ] {
         let source = "def text := \"axiom\"\nby " + token + "\n"
         do {
             try LeanTrust.inspectSource(source, path: "Fixture.lean")

@@ -3,15 +3,13 @@ import SwiftestEngine
 import Testing
 
 private func testingEvent(
-    _ kind: SwiftTestingEventKind,
+    _ event: SwiftTestingEvent,
     testID: SwiftTestingTestID? = nil,
-    issue: SwiftTestingIssue? = nil,
     iteration: Int? = nil
 ) -> SwiftTestingRecord {
     .event(SwiftTestingEventRecord(
-        kind: kind,
+        event: event,
         testID: testID,
-        issue: issue,
         secondsSince1970: 1,
         iteration: iteration
     ))
@@ -136,7 +134,7 @@ func parameterizedCaseEventsRequireAnActiveDeclaredParentAndSameIteration() thro
     let missingIteration = parameterizedRun(id: id, cases: [
         testingEvent(.testCaseStarted, testID: id),
     ])
-    #expect(throws: SwiftTestingStreamError.invalidSequence("case event without active parent and iteration")) {
+    #expect(throws: SwiftTestingStreamError.invalidSequence("event kind and locus disagree")) {
         try StableTestingABI.summarize(missingIteration)
     }
 
@@ -171,7 +169,7 @@ func nonparameterizedCaseEventsAndUnownedNonfailureIssuesAreRejected() throws {
         .test(SwiftTestingTestRecord(id: id, name: "plain()", kind: .function(parameterized: false))),
         testingEvent(.runStarted),
         testingEvent(.testStarted, testID: id),
-        testingEvent(.issueRecorded, testID: foreign, issue: nonfailure),
+        testingEvent(.issueRecorded(nonfailure), testID: foreign),
         testingEvent(.testEnded, testID: id),
         testingEvent(.runEnded),
     ]
@@ -226,7 +224,7 @@ func testCancellationNeedsStartAndEndAndFailureTakesPrecedence() throws {
     let issue = SwiftTestingIssue(isKnown: false, isFailure: true, severity: "error")
     let failed = parameterizedRun(id: id, cases: [
         testingEvent(.testCaseStarted, testID: id, iteration: 1),
-        testingEvent(.issueRecorded, testID: id, issue: issue, iteration: 1),
+        testingEvent(.issueRecorded(issue), testID: id, iteration: 1),
         testingEvent(.testCaseCancelled, testID: id, iteration: 1),
         testingEvent(.testCaseEnded, testID: id, iteration: 1),
     ])
@@ -243,5 +241,143 @@ func swiftTestingABIRejectsZeroIteration() throws {
     """
     #expect(throws: SwiftTestingStreamError.invalidNumber("iteration")) {
         try StableTestingABI.decodeRecord(Data(event.utf8))
+    }
+}
+
+@Test
+func swiftTestingAttachmentPathsRejectAmbiguousLocations() throws {
+    let path = try SwiftTestingAttachmentPath.parse("/private/tmp/evidence/world.json")
+    #expect(path.rawValue == "/private/tmp/evidence/world.json")
+    for invalid in ["world.json", "/", "/private//world.json", "/private/./world.json", "/private/../world.json", "/private/world\0.json"] {
+        #expect(throws: SwiftTestingStreamError.invalidIdentifier("attachment path")) {
+            try SwiftTestingAttachmentPath.parse(invalid)
+        }
+    }
+}
+
+@Test
+func swiftTestingAttachmentEventsRetainTypedPathAndActiveTestIdentity() throws {
+    let test = """
+    {"version":"6.4.0","kind":"test","payload":{"kind":"function","name":"one()","id":"Module.one()","isParameterized":false,"sourceLocation":{"filePath":"/tmp/One.swift","line":1,"column":1},"tags":[]}}
+    """
+    let started = """
+    {"version":"6.4.0","kind":"event","payload":{"kind":"runStarted","instant":{"absolute":1,"since1970":1},"messages":[]}}
+    {"version":"6.4.0","kind":"event","payload":{"kind":"testStarted","instant":{"absolute":1,"since1970":1},"messages":[],"testID":"Module.one()"}}
+    """
+    let attached = """
+    {"version":"6.4.0","kind":"event","payload":{"kind":"valueAttached","instant":{"absolute":1,"since1970":1},"messages":[],"testID":"Module.one()","attachment":{"path":"/private/tmp/evidence/world.json"}}}
+    """
+    let testEnded = """
+    {"version":"6.4.0","kind":"event","payload":{"kind":"testEnded","instant":{"absolute":1,"since1970":1},"messages":[],"testID":"Module.one()"}}
+    """
+    let runEnded = """
+    {"version":"6.4.0","kind":"event","payload":{"kind":"runEnded","instant":{"absolute":1,"since1970":1},"messages":[]}}
+    """
+    let bytes = Data(([test, started, attached, testEnded, runEnded].joined(separator: "\n") + "\n").utf8)
+    let evidence = try SwiftTestingCampaignEvidence.decode(bytes)
+    #expect(evidence.summary.passed.rawValue == 1)
+    #expect(evidence.attachments.count == 1)
+    #expect(evidence.attachments.first?.testID?.rawValue == "Module.one()")
+    #expect(evidence.attachments.first?.path.rawValue == "/private/tmp/evidence/world.json")
+
+    let afterEnd = Data(([test, started, testEnded, attached, runEnded].joined(separator: "\n") + "\n").utf8)
+    #expect(throws: SwiftTestingStreamError.invalidSequence("attachment outside active test")) {
+        try SwiftTestingCampaignEvidence.decode(afterEnd)
+    }
+    let noOwner = attached.replacingOccurrences(of: ",\"testID\":\"Module.one()\"", with: "")
+        .replacingOccurrences(of: "\"attachment\":", with: "\"iteration\":1,\"attachment\":")
+    #expect(noOwner != attached)
+    let unowned = Data(([test, started, noOwner, testEnded, runEnded].joined(separator: "\n") + "\n").utf8)
+    #expect(throws: SwiftTestingStreamError.invalidSequence("invalid event locus")) {
+        try SwiftTestingCampaignEvidence.decode(unowned)
+    }
+}
+
+@Test
+func swiftTestingScopedEventsRequireActiveCaseAndLegalEventLocus() throws {
+    let id = try SwiftTestingTestID.parse("Suite/cases(_:)")
+    let path = try SwiftTestingAttachmentPath.parse("/private/tmp/evidence/case.json")
+    let issue = SwiftTestingIssue(isKnown: false, isFailure: true, severity: "error")
+    let active = parameterizedRun(id: id, cases: [
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.valueAttached(path), testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+    ])
+    #expect(try StableTestingABI.summarize(active).passed.rawValue == 1)
+
+    let repeatedTestLifecycle: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "cases(_:)", kind: .function(parameterized: true))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+        testingEvent(.testEnded, testID: id, iteration: 1),
+        testingEvent(.runEnded),
+    ]
+    #expect(try StableTestingABI.summarize(repeatedTestLifecycle).passed.rawValue == 1)
+
+    let crossedRepetition: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "cases(_:)", kind: .function(parameterized: true))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+        testingEvent(.testEnded, testID: id, iteration: 2),
+        testingEvent(.runEnded),
+    ]
+    #expect(throws: SwiftTestingStreamError.invalidSequence("test end without start")) {
+        try StableTestingABI.summarize(crossedRepetition)
+    }
+
+    let crossedCaseRepetition: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "cases(_:)", kind: .function(parameterized: true))),
+        testingEvent(.runStarted),
+        testingEvent(.testStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseStarted, testID: id, iteration: 2),
+        testingEvent(.testCaseEnded, testID: id, iteration: 2),
+        testingEvent(.testEnded, testID: id, iteration: 1),
+        testingEvent(.runEnded),
+    ]
+    #expect(throws: SwiftTestingStreamError.invalidSequence("case repetition disagrees with parent test")) {
+        try StableTestingABI.summarize(crossedCaseRepetition)
+    }
+
+    let afterCaseEnd = parameterizedRun(id: id, cases: [
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+        testingEvent(.valueAttached(path), testID: id, iteration: 1),
+    ])
+    #expect(throws: SwiftTestingStreamError.invalidSequence("attachment outside active test case")) {
+        try StableTestingABI.summarize(afterCaseEnd)
+    }
+    let beforeCaseStart = parameterizedRun(id: id, cases: [
+        testingEvent(.issueRecorded(issue), testID: id, iteration: 1),
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+    ])
+    #expect(throws: SwiftTestingStreamError.invalidSequence("issue outside active test case")) {
+        try StableTestingABI.summarize(beforeCaseStart)
+    }
+    let afterCaseIssue = parameterizedRun(id: id, cases: [
+        testingEvent(.testCaseStarted, testID: id, iteration: 1),
+        testingEvent(.testCaseEnded, testID: id, iteration: 1),
+        testingEvent(.issueRecorded(issue), testID: id, iteration: 1),
+    ])
+    #expect(throws: SwiftTestingStreamError.invalidSequence("issue outside active test case")) {
+        try StableTestingABI.summarize(afterCaseIssue)
+    }
+
+    let malformedRun: [SwiftTestingRecord] = [
+        .test(SwiftTestingTestRecord(id: id, name: "cases(_:)", kind: .function(parameterized: true))),
+        testingEvent(.runStarted, testID: id),
+    ]
+    #expect(throws: SwiftTestingStreamError.invalidSequence("event kind and locus disagree")) {
+        try StableTestingABI.summarize(malformedRun)
+    }
+    let malformedTest = parameterizedRun(id: id, cases: [
+        testingEvent(.testStarted, iteration: 1),
+    ])
+    #expect(throws: SwiftTestingStreamError.invalidSequence("invalid event locus")) {
+        try StableTestingABI.summarize(malformedTest)
     }
 }

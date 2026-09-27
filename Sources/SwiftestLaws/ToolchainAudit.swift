@@ -35,7 +35,7 @@ public enum ToolchainAudit {
     public static let swiftVersion = "6.4"
     public static let swiftSyntaxVersion = "604.0.0"
     public static let swiftSyntaxModuleVersion = "6.4.0.34.1"
-    public static let leanVersion = "4.34.1"
+    public static let leanVersion = PinnedLeanToolchain.version
 
     public static func inspect(
         root: String,
@@ -50,18 +50,18 @@ public enum ToolchainAudit {
         } catch let error {
             throw .platform(error)
         }
-        let swift = try runApple(
+        let swift = versionText(try runApple(
             executable: "/usr/bin/xcrun",
             arguments: ["swift", "--version"],
             root: root,
             scratch: scratch
-        )
-        let xcode = try runApple(
+        ))
+        let xcode = versionText(try runApple(
             executable: "/usr/bin/xcodebuild",
             arguments: ["-version"],
             root: root,
             scratch: scratch
-        )
+        ))
         let swiftSyntax = try hostSwiftSyntaxModuleVersion(
             root: root,
             swiftVersionOutput: swift,
@@ -78,11 +78,7 @@ public enum ToolchainAudit {
             ),
         ]
         if level == .formal {
-            let lean = try runLean(
-                executable: "/usr/bin/env",
-                arguments: ["lean", "--version"],
-                root: root
-            )
+            let lean = try runLean(root: root, scratch: scratch)
             observations.append(observation(component: "Lean", expected: leanVersion, actual: lean))
         }
         return observations
@@ -98,7 +94,7 @@ public enum ToolchainAudit {
             arguments: ["--find", "swift"],
             root: root,
             scratch: scratch
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        ).standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         if executable.isEmpty {
             throw .swiftSyntaxMetadata("swift-executable")
         }
@@ -146,33 +142,39 @@ public enum ToolchainAudit {
         arguments: [String],
         root: String,
         scratch: borrowing ScratchDirectoryOwner
-    ) throws(ToolchainAuditError) -> String {
+    ) throws(ToolchainAuditError) -> ProcessOutput {
         do {
             return try ProcessBoundary.runPinnedApple(
                 executable: executable,
                 arguments: arguments,
                 workingDirectory: root,
                 scratch: scratch
-            ).standardOutput
+            )
         } catch let error {
             throw .platform(error)
         }
     }
 
     private static func runLean(
-        executable: String,
-        arguments: [String],
-        root: String
+        root: String,
+        scratch: borrowing ScratchDirectoryOwner
     ) throws(ToolchainAuditError) -> String {
         do {
-            return try ProcessBoundary.run(
-                executable: executable,
-                arguments: arguments,
-                workingDirectory: root
-            ).standardOutput
+            let toolchain = try PinnedLeanToolchain.resolve()
+            return versionText(try ProcessBoundary.runPinnedLean(
+                toolchainBin: toolchain.bin,
+                executable: toolchain.lean,
+                arguments: ["--version"],
+                workingDirectory: root,
+                scratch: scratch
+            ))
         } catch let error {
             throw .platform(error)
         }
+    }
+
+    static func versionText(_ output: ProcessOutput) -> String {
+        output.standardOutput + "\n" + output.standardError
     }
 
     static func observation(
@@ -193,7 +195,9 @@ public enum ToolchainAudit {
         let candidates = lines.filter { line in
             switch component {
             case "Swift":
-                return line.hasPrefix("Apple Swift version ") || line.hasPrefix("swift-driver version: ")
+                return line.hasPrefix("Apple Swift version ")
+                    || (line.hasPrefix("swift-driver version: ")
+                        && line.contains(" Apple Swift version "))
             case "Xcode":
                 return line.hasPrefix("Xcode ")
             case "Lean":

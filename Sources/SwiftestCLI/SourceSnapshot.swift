@@ -12,7 +12,12 @@ struct SourceSnapshot: ~Copyable {
     private let scratch: ScratchDirectoryOwner
     private let originalRoot: String
     let root: String
-    let seal: SourceTreeSeal
+    private let watchedTree: LeasedSourceTree
+    private let initialContinuity: FileEventContinuity
+
+    var seal: SourceTreeSeal {
+        watchedTree.seal
+    }
 
     init(source: SourceTreeSeal) throws(SourceSnapshotError) {
         let parent = "/private/tmp"
@@ -57,25 +62,49 @@ struct SourceSnapshot: ~Copyable {
         } catch {
             throw .platform(.write(root))
         }
-        let captured: SourceTreeSeal
+        let canonicalRoot: String
         do {
-            captured = try SourceTreeSeal.capture(root: root)
-            try source.assertSameTree(as: captured)
+            canonicalRoot = try CanonicalPathBoundary.directory(root)
+        } catch let error {
+            throw .platform(error)
+        }
+        let captured = try Self.captureVerifiedSnapshot(root: canonicalRoot, source: source)
+        let initialContinuity: FileEventContinuity
+        do {
+            initialContinuity = try captured.verifyUnchanged()
         } catch let error {
             throw .seal(error)
         }
         self.scratch = scratch
         self.originalRoot = source.root
-        self.root = root
-        self.seal = captured
+        self.root = canonicalRoot
+        self.watchedTree = captured
+        self.initialContinuity = initialContinuity
     }
 
-    borrowing func verifyUnchanged() throws(SourceSnapshotError) {
+    private static func captureVerifiedSnapshot(
+        root: String,
+        source: SourceTreeSeal
+    ) throws(SourceSnapshotError) -> LeasedSourceTree {
         do {
-            try seal.verifyUnchanged()
+            let captured = try SourceTreeSeal.captureLeased(root: root)
+            try source.assertSameTree(as: captured.seal)
+            return captured
         } catch let error {
             throw .seal(error)
         }
+    }
+
+    borrowing func observeUnchanged() throws(SourceSnapshotError) -> FileEventWitness {
+        do {
+            return try watchedTree.observeUnchanged().including(initialContinuity)
+        } catch let error {
+            throw .seal(error)
+        }
+    }
+
+    borrowing func verifyUnchanged() throws(SourceSnapshotError) -> FileEventContinuity {
+        try observeUnchanged().continuity
     }
 
     borrowing func rebasedContainer(_ path: String?) -> String? {

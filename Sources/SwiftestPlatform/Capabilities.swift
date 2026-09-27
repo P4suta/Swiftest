@@ -5,7 +5,14 @@ public enum PlatformError: Error, Equatable, Sendable {
     case invalidRoot(String)
     case pathEscapesRoot(String)
     case createDirectory(String)
+    case scratchOwnershipLost(String)
     case read(String)
+    case watch(String)
+    case changedWhileWatched(String)
+    case attributeAmbiguous(WatchedPath)
+    case attributeOriginMissing
+    case eventGenerationOverflow
+    case lateInputEvent
     case write(String)
     case remove(String)
     case move(String, String)
@@ -13,9 +20,32 @@ public enum PlatformError: Error, Equatable, Sendable {
     case lockBusy(String, Int32)
     case processLaunch(String)
     case processExit(String, Int32, String)
+    case processTimedOut(String)
+    case processCancelled(String)
+    case processInputLimit(String)
+    case processOutputLimit(String)
+    case processTerminationFailed(String)
     case invalidOutput(String)
     case outputExists(String)
+    case outputDurabilityUnconfirmed(String)
     case unsupportedPlatform(String)
+}
+
+public struct WatchedPath: Equatable, Sendable {
+    public let rawValue: String
+
+    private init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    static func validated(_ candidate: String) -> WatchedPath? {
+        let components = candidate.split(separator: "/", omittingEmptySubsequences: false)
+        guard !candidate.utf8.contains(0), components.first == "", components.count > 1,
+            components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            return nil
+        }
+        return WatchedPath(rawValue: candidate)
+    }
 }
 
 public enum FileEntryKind: String, CaseIterable, Sendable {
@@ -23,6 +53,11 @@ public enum FileEntryKind: String, CaseIterable, Sendable {
     case directory
     case symbolicLink = "symbolic-link"
     case other
+}
+
+public enum OptionalDirectoryListing: Equatable, Sendable {
+    case absent
+    case entries([String])
 }
 
 public struct FileMode: Equatable, Sendable {
@@ -38,20 +73,29 @@ public struct FileMode: Equatable, Sendable {
 }
 
 public struct WriteCapability: ~Copyable {
-    let root: URL
+    let root: String
+    let descriptor: Int32
 
-    init(root: URL) {
+    init(root: String, descriptor: Int32) {
         self.root = root
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        ABIAdapter.closeOrTerminate(descriptor)
     }
 }
 
 public enum FileSystemAuthority {
     public static func grant(root: String) throws(PlatformError) -> WriteCapability {
-        let url = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath()
-        if !url.isFileURL {
+        guard root.hasPrefix("/"), let canonical = ABIAdapter.canonicalPath(root) else {
             throw .invalidRoot(root)
         }
-        return WriteCapability(root: url)
+        let descriptor = ABIAdapter.openDirectoryWithoutSymlinks(at: canonical)
+        guard descriptor >= 0 else {
+            throw .invalidRoot(root)
+        }
+        return WriteCapability(root: canonical, descriptor: descriptor)
     }
 }
 
@@ -68,6 +112,17 @@ public enum FileSystemBoundary {
         do {
             return try FileManager.default.contentsOfDirectory(atPath: path).sorted()
         } catch {
+            throw .read(path)
+        }
+    }
+
+    public static func listIfPresent(path: String) throws(PlatformError) -> OptionalDirectoryListing {
+        switch ABIAdapter.directoryPresence(at: path) {
+        case .absent:
+            return .absent
+        case .present:
+            return .entries(try list(path: path))
+        case .unavailable:
             throw .read(path)
         }
     }
@@ -122,13 +177,13 @@ public enum FileSystemBoundary {
         relativePath: ArtifactPath,
         capability: consuming WriteCapability
     ) throws(PlatformError) {
-        let destination = try authorizedURL(relativePath: relativePath, root: capability.root)
-        let parent = destination.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            try data.write(to: destination, options: .atomic)
-        } catch {
-            throw .write(destination.path)
+        switch ABIAdapter.writeRelative(data, path: relativePath.rawValue, root: capability.descriptor) {
+        case .completed:
+            return
+        case .escaped:
+            throw .pathEscapesRoot(relativePath.rawValue)
+        case .unavailable:
+            throw .write(capability.root + "/" + relativePath.rawValue)
         }
     }
 
@@ -137,26 +192,19 @@ public enum FileSystemBoundary {
         relativePath: ArtifactPath,
         capability: consuming WriteCapability
     ) throws(PlatformError) {
-        let destination = try authorizedURL(relativePath: relativePath, root: capability.root)
-        do {
-            guard try entryKind(path: source) == .file else {
-                throw PlatformError.read(source)
-            }
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try FileManager.default.copyItem(
-                at: URL(fileURLWithPath: source),
-                to: destination
-            )
-            guard try entryKind(path: destination.path) == .file else {
-                throw PlatformError.write(destination.path)
-            }
-        } catch let error as PlatformError {
-            throw error
-        } catch {
-            throw .write(destination.path)
+        switch ABIAdapter.copyRelativeRegularFile(
+            from: source,
+            path: relativePath.rawValue,
+            root: capability.descriptor
+        ) {
+        case .completed:
+            return
+        case .escaped:
+            throw .pathEscapesRoot(relativePath.rawValue)
+        case .sourceUnavailable:
+            throw .read(source)
+        case .destinationUnavailable:
+            throw .write(capability.root + "/" + relativePath.rawValue)
         }
     }
 
@@ -164,11 +212,13 @@ public enum FileSystemBoundary {
         relativePath: ArtifactPath,
         capability: consuming WriteCapability
     ) throws(PlatformError) {
-        let destination = try authorizedURL(relativePath: relativePath, root: capability.root)
-        do {
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        } catch {
-            throw .createDirectory(destination.path)
+        switch ABIAdapter.createRelativeDirectory(path: relativePath.rawValue, root: capability.descriptor) {
+        case .completed:
+            return
+        case .escaped:
+            throw .pathEscapesRoot(relativePath.rawValue)
+        case .unavailable:
+            throw .createDirectory(capability.root + "/" + relativePath.rawValue)
         }
     }
 
@@ -177,12 +227,17 @@ public enum FileSystemBoundary {
         destination: ArtifactPath,
         capability: consuming WriteCapability
     ) throws(PlatformError) {
-        let link = try authorizedURL(relativePath: relativePath, root: capability.root)
-        let target = try authorizedURL(relativePath: destination, root: capability.root)
-        do {
-            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
-        } catch {
-            throw .write(link.path)
+        switch ABIAdapter.createRelativeSymbolicLink(
+            path: relativePath.rawValue,
+            target: destination.rawValue,
+            root: capability.descriptor
+        ) {
+        case .completed:
+            return
+        case .escaped:
+            throw .pathEscapesRoot(relativePath.rawValue)
+        case .unavailable:
+            throw .write(capability.root + "/" + relativePath.rawValue)
         }
     }
 
@@ -190,11 +245,13 @@ public enum FileSystemBoundary {
         relativePath: ArtifactPath,
         capability: consuming WriteCapability
     ) throws(PlatformError) {
-        let destination = try authorizedURL(relativePath: relativePath, root: capability.root)
-        do {
-            try FileManager.default.removeItem(at: destination)
-        } catch {
-            throw .remove(destination.path)
+        switch ABIAdapter.removeRelative(path: relativePath.rawValue, root: capability.descriptor) {
+        case .completed:
+            return
+        case .escaped:
+            throw .pathEscapesRoot(relativePath.rawValue)
+        case .unavailable:
+            throw .remove(capability.root + "/" + relativePath.rawValue)
         }
     }
 
@@ -215,30 +272,100 @@ public enum FileSystemBoundary {
 
 public struct ScratchDirectoryOwner: ~Copyable {
     public let path: String
+    private let name: String
+    private let parentPath: String
+    private let parentIdentity: ABIAdapter.DirectoryIdentity
+    private let directoryIdentity: ABIAdapter.DirectoryIdentity
+    private let parentDescriptor: Int32
+    private let directoryDescriptor: Int32
 
     public init(parent: String, name: String) throws(PlatformError) {
-        let parentURL = URL(fileURLWithPath: parent).standardizedFileURL
-        let destination = parentURL.appendingPathComponent(name).standardizedFileURL
-        let prefix = parentURL.path.hasSuffix("/") ? parentURL.path : parentURL.path + "/"
-        if !destination.path.hasPrefix(prefix) {
+        let parentComponents = parent.split(separator: "/", omittingEmptySubsequences: false)
+        guard parentComponents.first == "", parentComponents.count > 1,
+            parentComponents.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+            !parent.utf8.contains(0) else {
+            throw .invalidRoot(parent)
+        }
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
+            !name.utf8.contains(0) else {
             throw .pathEscapesRoot(name)
         }
-        do {
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
-        } catch {
-            throw .createDirectory(destination.path)
+        guard let expectedParent = ABIAdapter.canonicalDirectoryIdentity(at: parent) else {
+            throw .invalidRoot(parent)
         }
-        self.path = destination.path
+        let destination = parent + "/" + name
+        switch ABIAdapter.createExclusiveScratchDirectory(
+            named: name,
+            in: parent,
+            expectedParent: expectedParent
+        ) {
+        case .created(let identity, let parentDescriptor, let directoryDescriptor):
+            self.path = destination
+            self.name = name
+            self.parentPath = parent
+            self.parentIdentity = expectedParent
+            self.directoryIdentity = identity
+            self.parentDescriptor = parentDescriptor
+            self.directoryDescriptor = directoryDescriptor
+        case .present, .unavailable:
+            throw .createDirectory(destination)
+        }
+    }
+
+    public borrowing func verifyOwnership() throws(PlatformError) {
+        guard ABIAdapter.canonicalDirectoryIdentity(at: parentPath) == parentIdentity,
+            ABIAdapter.inputDirectoryIdentity(at: path) == directoryIdentity,
+            ABIAdapter.directoryIdentity(of: parentDescriptor) == parentIdentity,
+            ABIAdapter.directoryIdentity(of: directoryDescriptor) == directoryIdentity else {
+            throw .scratchOwnershipLost(path)
+        }
     }
 
     public borrowing func issueWriteCapability() -> WriteCapability {
-        WriteCapability(root: URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath())
+        do {
+            return try issueVerifiedWriteCapability()
+        } catch {
+            ABIAdapter.terminateFailure("swiftest: scratch ownership lost before capability issuance\n")
+        }
+    }
+
+    public borrowing func issueVerifiedWriteCapability() throws(PlatformError) -> WriteCapability {
+        try verifyOwnership()
+        let descriptor = ABIAdapter.duplicateDirectory(directoryDescriptor)
+        guard descriptor >= 0 else {
+            throw .scratchOwnershipLost(path)
+        }
+        guard ABIAdapter.directoryIdentity(of: descriptor) == directoryIdentity else {
+            ABIAdapter.closeOrTerminate(descriptor)
+            throw .scratchOwnershipLost(path)
+        }
+        do {
+            try verifyOwnership()
+        } catch {
+            ABIAdapter.closeOrTerminate(descriptor)
+            throw error
+        }
+        return WriteCapability(root: path, descriptor: descriptor)
     }
 
     deinit {
         do {
-            try FileManager.default.removeItem(atPath: path)
+            try verifyOwnership()
+            guard ABIAdapter.removeDirectoryContents(directoryDescriptor) else {
+                ABIAdapter.terminateFailure("swiftest: scratch cleanup ownership failure\n")
+            }
+            try verifyOwnership()
+            guard ABIAdapter.removeOwnedScratchDirectory(
+                named: name,
+                in: parentDescriptor,
+                expected: directoryIdentity
+            ) else {
+                ABIAdapter.terminateFailure("swiftest: scratch cleanup ownership failure\n")
+            }
+            ABIAdapter.closeOrTerminate(directoryDescriptor)
+            ABIAdapter.closeOrTerminate(parentDescriptor)
         } catch {
+            ABIAdapter.terminateFailure("swiftest: scratch cleanup ownership failure\n")
         }
     }
 }

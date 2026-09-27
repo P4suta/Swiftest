@@ -91,7 +91,7 @@ public enum SwiftestModuleGraph {
         ),
         ModuleDeclaration(
             name: "SwiftestMacros",
-            dependencies: ["SwiftestCodec"],
+            dependencies: ["SwiftestCodec", "SwiftestLaws"],
             role: .macro,
             systemImports: ["Foundation", "SwiftParser", "SwiftSyntax"]
         ),
@@ -160,6 +160,7 @@ public enum SwiftestModuleGraph {
         ModuleDeclaration(
             name: "SwiftestEngineTests",
             dependencies: [
+                "SwiftestCodec",
                 "SwiftestEngine",
                 "SwiftestFaults",
                 "SwiftestModel",

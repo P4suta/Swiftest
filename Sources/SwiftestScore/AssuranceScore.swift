@@ -11,7 +11,9 @@ public struct AssuranceScore: Equatable, Sendable {
 
     public static func measure(_ catalog: EvidenceCatalog) throws(NumericValueError) -> AssuranceScore {
         let claimStatuses = catalog.claimObservations.map(\.status)
-        let mutationStatuses = catalog.mutationObservations.map(\.detected)
+        let mutationStatuses: [ObservationStatus] = catalog.mutationObservations.map {
+            $0.isSuccessful ? .passed : .failed
+        }
         let lawStatuses = catalog.lawObservations.map(\.status)
         let schemaStatuses = catalog.schemaObservations.map(\.status)
         let statuses = claimStatuses + mutationStatuses + lawStatuses + schemaStatuses

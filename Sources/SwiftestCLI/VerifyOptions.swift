@@ -11,11 +11,18 @@ enum VerifyTarget {
     case xcode(scheme: String, destination: String, project: String?, workspace: String?)
 }
 
+enum VerifyLawDomain {
+    case selfRepository
+    case externalSwiftPackage
+    case externalXcode
+}
+
 struct VerifyOptions {
     let root: String
     let output: String?
     let gapPolicy: GapPolicy
     let target: VerifyTarget
+    let lawDomain: VerifyLawDomain
 
     static func parse(_ arguments: [String]) throws(CLIError) -> VerifyOptions {
         var root: String?
@@ -24,6 +31,7 @@ struct VerifyOptions {
         var destination: String?
         var project: String?
         var workspace: String?
+        var explicitLawDomain: VerifyLawDomain?
         var gapPolicy = GapPolicy.requireAssurance
         var sawGapOption = false
         var index = 0
@@ -36,6 +44,11 @@ struct VerifyOptions {
                 }
                 sawGapOption = true
                 gapPolicy = .allowGaps
+            case "--self-laws":
+                if explicitLawDomain != nil {
+                    throw .usage(argument)
+                }
+                explicitLawDomain = .selfRepository
             case "--output", "--scheme", "--destination", "--project", "--workspace":
                 let valueIndex = index + 1
                 if valueIndex >= arguments.count || arguments[valueIndex].hasPrefix("--") {
@@ -77,12 +90,22 @@ struct VerifyOptions {
             throw .usage("project-or-workspace")
         }
         let target: VerifyTarget
+        let lawDomain: VerifyLawDomain
         if let scheme, let destination {
+            if explicitLawDomain != nil {
+                throw .usage("self-laws-with-xcode")
+            }
             target = .xcode(scheme: scheme, destination: destination, project: project, workspace: workspace)
+            lawDomain = .externalXcode
         } else if scheme != nil || destination != nil || project != nil || workspace != nil {
             throw .usage("xcode-scheme-and-destination")
         } else {
             target = .automatic
+            if let explicitLawDomain {
+                lawDomain = explicitLawDomain
+            } else {
+                lawDomain = .externalSwiftPackage
+            }
         }
         let repository: String
         if let root {
@@ -94,7 +117,8 @@ struct VerifyOptions {
             root: repository,
             output: output,
             gapPolicy: gapPolicy,
-            target: target
+            target: target,
+            lawDomain: lawDomain
         )
     }
 }

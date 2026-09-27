@@ -1,27 +1,43 @@
 import Foundation
 import SwiftestPlatform
 
+struct XcodeVerifiedPlan: Equatable, Sendable {
+    let planName: String
+    let configurationName: String
+    let buildConfiguration: XcodeBuildConfiguration
+    let targets: [XcodeVerifiedTarget]
+    let compiledSources: XcodeCompiledSourceSet
+}
+
 enum XcodeSchemeClosure {
     static func verify(
         scheme: String,
         container: XcodeContainer,
-        projects: [String],
+        projects: [XcodeVerifiedProject],
         repositoryRoot: String
-    ) throws(XcodeInputClosureError) {
+    ) throws(XcodeInputClosureError) -> XcodeVerifiedPlan {
         try XcodeInputClosure.validateRelativeReference(scheme)
         guard !scheme.contains("/") else {
             throw .invalidScheme
         }
-        let containers = Set([container.path] + projects).sorted()
+        let projectPaths = Set(projects.map(\.path))
+        let containers = Set([container.path] + projects.map(\.path)).sorted()
         var locations: [(path: String, base: String)] = []
         for candidate in containers {
             try rejectConflictingUserScheme(name: scheme + ".xcscheme", container: candidate)
             let directory = candidate + "/xcshareddata/xcschemes"
-            let entries: [String]
+            let listing: OptionalDirectoryListing
             do {
-                entries = try FileSystemBoundary.list(path: directory)
-            } catch {
+                listing = try FileSystemBoundary.listIfPresent(path: directory)
+            } catch let error {
+                throw .platform(error)
+            }
+            let entries: [String]
+            switch listing {
+            case .absent:
                 continue
+            case .entries(let found):
+                entries = found
             }
             let name = scheme + ".xcscheme"
             if entries.contains(name) {
@@ -51,32 +67,123 @@ enum XcodeSchemeClosure {
         } catch let error {
             throw .platform(error)
         }
-        let references = try inspect(data)
+        let inspection = try inspectScheme(data)
         try validateReferences(
-            references,
+            inspection.references,
             base: location.base,
-            projects: Set(projects),
+            projects: projectPaths,
             repositoryRoot: repositoryRoot
         )
+        guard let planReference = inspection.testPlanReference else {
+            throw .unsupportedSchemeFeature("test-plan-required")
+        }
+        let planPath = try XcodeInputClosure.contained(
+            path: location.base + "/" + planReference,
+            root: repositoryRoot
+        )
+        let planKind: FileEntryKind
+        do {
+            planKind = try FileSystemBoundary.entryKind(path: planPath)
+        } catch let error {
+            throw .platform(error)
+        }
+        guard planKind == .file else {
+            throw .invalidTestPlan("file")
+        }
+        let planData: Data
+        do {
+            planData = try FileSystemBoundary.read(path: planPath)
+        } catch let error {
+            throw .platform(error)
+        }
+        let plan = try XcodeTestPlanClosure.decode(planData)
+        try validateReferences(
+            plan.targets.map(\.project),
+            base: location.base,
+            projects: projectPaths,
+            repositoryRoot: repositoryRoot
+        )
+        let compiledSources = try validatePlanTargets(
+            plan.targets,
+            base: location.base,
+            projects: projects,
+            repositoryRoot: repositoryRoot
+        )
+        guard inspection.buildTargets == plan.targets,
+            let buildConfiguration = inspection.buildConfiguration else {
+            throw .invalidTestPlan("scheme-build-target")
+        }
+        let planName = URL(fileURLWithPath: planReference).deletingPathExtension().lastPathComponent
+        guard !planName.isEmpty else {
+            throw .invalidTestPlan("name")
+        }
+        return XcodeVerifiedPlan(
+            planName: planName,
+            configurationName: plan.configurationName,
+            buildConfiguration: buildConfiguration,
+            targets: plan.targets,
+            compiledSources: compiledSources
+        )
+    }
+
+    static func validatePlanTargets(
+        _ targets: [XcodeVerifiedTarget],
+        base: String,
+        projects: [XcodeVerifiedProject],
+        repositoryRoot: String
+    ) throws(XcodeInputClosureError) -> XcodeCompiledSourceSet {
+        guard targets.count == 1, let target = targets.first else {
+            throw .invalidTestPlan("target-count")
+        }
+        let projectPath = try XcodeInputClosure.contained(
+            path: base + "/" + target.project,
+            root: repositoryRoot
+        )
+        let matchingProjects = projects.filter { $0.path == projectPath }
+        guard matchingProjects.count == 1, let project = matchingProjects.first,
+            project.targetIdentifiers.contains(target.identifier),
+            let sources = project.sourcePathsByTarget[target.identifier],
+            !sources.isEmpty else {
+            throw .invalidTestPlan("target-identifier")
+        }
+        do {
+            return try XcodeCompiledSourceSet.capture(sources.sorted(), repositoryRoot: repositoryRoot)
+        } catch {
+            throw .invalidTestPlan("compiled-sources")
+        }
     }
 
     private static func rejectConflictingUserScheme(
         name: String,
         container: String
     ) throws(XcodeInputClosureError) {
-        let users: [String]
+        let listing: OptionalDirectoryListing
         do {
-            users = try FileSystemBoundary.list(path: container + "/xcuserdata")
-        } catch {
+            listing = try FileSystemBoundary.listIfPresent(path: container + "/xcuserdata")
+        } catch let error {
+            throw .platform(error)
+        }
+        let users: [String]
+        switch listing {
+        case .absent:
             return
+        case .entries(let found):
+            users = found
         }
         for user in users {
             let directory = container + "/xcuserdata/" + user + "/xcschemes"
-            let entries: [String]
+            let userListing: OptionalDirectoryListing
             do {
-                entries = try FileSystemBoundary.list(path: directory)
-            } catch {
+                userListing = try FileSystemBoundary.listIfPresent(path: directory)
+            } catch let error {
+                throw .platform(error)
+            }
+            let entries: [String]
+            switch userListing {
+            case .absent:
                 continue
+            case .entries(let found):
+                entries = found
             }
             if entries.contains(name) {
                 throw .ambiguousScheme
@@ -85,6 +192,10 @@ enum XcodeSchemeClosure {
     }
 
     static func inspect(_ data: Data) throws(XcodeInputClosureError) -> [String] {
+        try inspectScheme(data).references
+    }
+
+    private static func inspectScheme(_ data: Data) throws(XcodeInputClosureError) -> SchemeInspection {
         let document: XcodeXMLNode
         do {
             document = try XcodeXML.parse(data, maximumBytes: 2_097_152)
@@ -93,11 +204,11 @@ enum XcodeSchemeClosure {
         }
         var inspection = SchemeInspection()
         try inspect(document, parent: nil, inspection: &inspection)
-        guard inspection.buildForTestingCount > 0,
-            inspection.testableCount > 0 else {
+        guard inspection.buildForTestingCount == 1,
+            inspection.testableCount > 0 || inspection.testPlanReference != nil else {
             throw .invalidScheme
         }
-        return inspection.references
+        return inspection
     }
 
     static func validateReferences(
@@ -142,29 +253,66 @@ enum XcodeSchemeClosure {
         switch element {
         case .scheme:
             guard let version = node.attributes["version"],
-                !version.isEmpty,
-                version.allSatisfy({ $0.isNumber || $0 == "." }) else {
+                version == "1.3",
+                node.attributes["wasCreatedForAppExtension"] == nil else {
                 throw .invalidScheme
+            }
+        case .buildAction:
+            guard keys == element.allowedAttributes,
+                node.attributes["parallelizeBuildables"] == "NO",
+                node.attributes["buildImplicitDependencies"] == "NO" else {
+                throw .unsupportedSchemeFeature("build-action-settings")
             }
         case .buildActionEntry:
-            if node.attributes["buildForTesting"] == "YES" {
-                inspection.buildForTestingCount += 1
+            guard keys == element.allowedAttributes,
+                node.attributes["buildForTesting"] == "YES",
+                node.attributes["buildForRunning"] == "NO",
+                node.attributes["buildForProfiling"] == "NO",
+                node.attributes["buildForArchiving"] == "NO",
+                node.attributes["buildForAnalyzing"] == "NO" else {
+                throw .unsupportedSchemeFeature("build-entry-settings")
             }
+            inspection.buildForTestingCount += 1
         case .testAction:
             guard let configuration = node.attributes["buildConfiguration"],
-                !configuration.isEmpty else {
+                let buildConfiguration = XcodeBuildConfiguration(rawValue: configuration),
+                node.attributes["shouldUseLaunchSchemeArgsEnv"] == "NO" else {
                 throw .invalidScheme
             }
+            inspection.buildConfiguration = buildConfiguration
+            for key in ["enableAddressSanitizer", "enableThreadSanitizer", "enableUBSanitizer",
+                "onlyGenerateCoverageForSpecifiedTargets"] where node.attributes[key] != nil {
+                guard node.attributes[key] == "NO" else {
+                    throw .unsupportedSchemeFeature(key)
+                }
+            }
+            if let coverage = node.attributes["codeCoverageEnabled"], coverage != "YES" {
+                throw .unsupportedSchemeFeature("codeCoverageEnabled")
+            }
+            if node.attributes["selectedDebuggerIdentifier"] != nil
+                || node.attributes["selectedLauncherIdentifier"] != nil {
+                throw .unsupportedSchemeFeature("test-launcher")
+            }
         case .testableReference:
-            guard node.attributes["skipped"] == "NO" else {
+            guard node.attributes["skipped"] == "NO",
+                node.attributes["parallelizable"] == nil
+                    || node.attributes["parallelizable"] == "NO" else {
                 throw .unsupportedSchemeFeature("skipped-test")
             }
             inspection.testableCount += 1
-        case .launchAction, .profileAction:
-            if let workingDirectory = node.attributes["useCustomWorkingDirectory"],
-                workingDirectory != "NO" {
-                throw .unsupportedSchemeFeature("custom-working-directory")
+        case .testPlanReference:
+            guard keys == element.allowedAttributes,
+                node.attributes["default"] == "YES",
+                let location = node.attributes["reference"],
+                location.hasPrefix("container:") else {
+                throw .invalidScheme
             }
+            let reference = String(location.dropFirst("container:".count))
+            guard reference.hasSuffix(".xctestplan") else {
+                throw .unsupportedSchemeFeature("test-plan-reference")
+            }
+            try XcodeInputClosure.validateRelativeReference(reference)
+            inspection.testPlanReference = reference
         case .buildableReference:
             guard keys == SchemeElement.buildableReference.allowedAttributes,
                 node.attributes["BuildableIdentifier"] == "primary",
@@ -180,8 +328,27 @@ enum XcodeSchemeClosure {
             }
             try XcodeInputClosure.validateRelativeReference(reference)
             inspection.references.append(reference)
-        case .buildAction, .buildActionEntries, .testables,
-            .buildableProductRunnable, .analyzeAction, .archiveAction, .macroExpansion:
+            if parent == .buildActionEntry {
+                guard let name = node.attributes["BlueprintName"], !name.isEmpty,
+                    node.attributes["BuildableName"] == name + ".xctest" else {
+                    throw .invalidScheme
+                }
+                inspection.buildTargets.append(XcodeVerifiedTarget(
+                    project: reference,
+                    identifier: identifier,
+                    name: name
+                ))
+            }
+        case .launchAction, .profileAction:
+            if let workingDirectory = node.attributes["useCustomWorkingDirectory"],
+                workingDirectory != "NO" {
+                throw .unsupportedSchemeFeature("custom-working-directory")
+            }
+            throw .unsupportedSchemeFeature(node.name)
+        case .analyzeAction, .archiveAction, .macroExpansion:
+            throw .unsupportedSchemeFeature(node.name)
+        case .buildActionEntries, .testables, .testPlans,
+            .buildableProductRunnable:
             break
         }
         var children: [SchemeElement] = []
@@ -201,6 +368,10 @@ enum XcodeSchemeClosure {
         of element: SchemeElement
     ) throws(XcodeInputClosureError) {
         let actual = Set(children)
+        if element == .testAction,
+            actual.contains(.testables) == actual.contains(.testPlans) {
+            throw .invalidScheme
+        }
         guard element.requiredChildren.isSubset(of: actual) else {
             throw .invalidScheme
         }
@@ -214,8 +385,11 @@ enum XcodeSchemeClosure {
 
 private struct SchemeInspection {
     var references: [String] = []
+    var buildTargets: [XcodeVerifiedTarget] = []
     var buildForTestingCount = 0
     var testableCount = 0
+    var testPlanReference: String?
+    var buildConfiguration: XcodeBuildConfiguration?
 }
 
 private enum SchemeElement: String {
@@ -227,6 +401,8 @@ private enum SchemeElement: String {
     case testAction = "TestAction"
     case testables = "Testables"
     case testableReference = "TestableReference"
+    case testPlans = "TestPlans"
+    case testPlanReference = "TestPlanReference"
     case launchAction = "LaunchAction"
     case buildableProductRunnable = "BuildableProductRunnable"
     case profileAction = "ProfileAction"
@@ -245,10 +421,14 @@ private enum SchemeElement: String {
         case .buildActionEntry, .testableReference, .buildableProductRunnable, .macroExpansion:
             return [.buildableReference]
         case .testAction:
-            return [.testables]
+            return []
         case .testables:
             return [.testableReference]
+        case .testPlans:
+            return [.testPlanReference]
         case .launchAction, .profileAction, .analyzeAction, .archiveAction, .buildableReference:
+            return []
+        case .testPlanReference:
             return []
         }
     }
@@ -256,12 +436,12 @@ private enum SchemeElement: String {
     var repeatableChildren: Set<SchemeElement> {
         switch self {
         case .buildActionEntries:
-            return [.buildActionEntry]
+            return []
         case .testables:
             return [.testableReference]
         case .scheme, .buildAction, .buildActionEntry, .buildableReference, .testAction,
             .testableReference, .launchAction, .buildableProductRunnable, .profileAction,
-            .analyzeAction, .archiveAction, .macroExpansion:
+            .analyzeAction, .archiveAction, .macroExpansion, .testPlans, .testPlanReference:
             return []
         }
     }
@@ -275,11 +455,12 @@ private enum SchemeElement: String {
         case .scheme:
             return [.launchAction, .profileAction, .analyzeAction, .archiveAction]
         case .testAction:
-            return [.macroExpansion]
+            return [.testables, .testPlans, .macroExpansion]
         case .launchAction, .profileAction:
             return [.buildableProductRunnable, .macroExpansion]
         case .buildAction, .buildActionEntries, .buildActionEntry, .buildableReference,
-            .testables, .testableReference, .buildableProductRunnable, .analyzeAction,
+            .testables, .testableReference, .testPlans, .testPlanReference,
+            .buildableProductRunnable, .analyzeAction,
             .archiveAction, .macroExpansion:
             return []
         }
@@ -291,7 +472,7 @@ private enum SchemeElement: String {
             return ["LastUpgradeVersion", "version", "wasCreatedForAppExtension"]
         case .buildAction:
             return ["parallelizeBuildables", "buildImplicitDependencies"]
-        case .buildActionEntries, .testables, .macroExpansion:
+        case .buildActionEntries, .testables, .testPlans, .macroExpansion:
             return []
         case .buildActionEntry:
             return ["buildForTesting", "buildForRunning", "buildForProfiling", "buildForArchiving", "buildForAnalyzing"]
@@ -304,6 +485,8 @@ private enum SchemeElement: String {
                 "enableThreadSanitizer", "enableUBSanitizer"]
         case .testableReference:
             return ["skipped", "parallelizable"]
+        case .testPlanReference:
+            return ["default", "reference"]
         case .launchAction:
             return ["buildConfiguration", "selectedDebuggerIdentifier", "selectedLauncherIdentifier",
                 "launchStyle", "useCustomWorkingDirectory", "ignoresPersistentStateOnLaunch",

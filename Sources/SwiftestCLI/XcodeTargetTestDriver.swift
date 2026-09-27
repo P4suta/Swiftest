@@ -63,9 +63,19 @@ enum XcodeTargetTestDriver {
         }
         let digest: Digest
         do {
-            digest = try .sha256(Data((
-                result.summaryDigest.rawValue + ":" + result.coverageDigest.rawValue
-            ).utf8))
+            var transcript = EvidenceTranscript()
+            transcript.append("xcode-app-v2")
+            for (name, value) in [
+                ("xctestrun-manifest", result.manifestDigest),
+                ("enumeration", result.enumerationDigest),
+                ("executed-tests", result.executedTestsDigest),
+                ("summary", result.summaryDigest),
+                ("coverage", result.coverageDigest),
+            ] {
+                transcript.append(name)
+                transcript.append(value.rawValue)
+            }
+            digest = try transcript.digest()
         } catch {
             return apparatus("xcresult", "result digest failed")
         }

@@ -42,6 +42,36 @@ struct SourceTreeSeal {
         return SourceTreeSeal(root: root, directories: directories.sorted(), files: captured)
     }
 
+    static func captureLeased(root: String) throws(SourceTreeSealError) -> LeasedSourceTree {
+        var files: [String] = []
+        var directories: [String] = []
+        try collect(root: root, relative: "", files: &files, directories: &directories)
+        var inputs = [WatchedInput(path: root, kind: .directory)]
+        inputs.append(contentsOf: directories.sorted().map {
+            WatchedInput(path: root + "/" + $0, kind: .directory)
+        })
+        inputs.append(contentsOf: files.sorted().map {
+            WatchedInput(path: root + "/" + $0, kind: .file)
+        })
+        let lease: FileEventLease
+        do {
+            lease = try FileEventLease(inputs: inputs)
+        } catch let error {
+            throw .platform(error)
+        }
+        let seal = try capture(root: root)
+        if directories.sorted() != seal.directories || files.sorted() != seal.files.keys.sorted() {
+            throw .changed("watched-input-inventory")
+        }
+        let initialContinuity: FileEventContinuity
+        do {
+            initialContinuity = try lease.verifyUnchanged()
+        } catch let error {
+            throw .platform(error)
+        }
+        return LeasedSourceTree(seal: seal, lease: lease, initialContinuity: initialContinuity)
+    }
+
     func verifyUnchanged() throws(SourceTreeSealError) {
         let after = try Self.capture(root: root)
         try assertSameTree(as: after)
@@ -58,27 +88,23 @@ struct SourceTreeSeal {
     }
 
     func manifestDigest() throws(SourceTreeSealError) -> Digest {
-        var manifest = Data()
+        var manifest = EvidenceTranscript()
+        manifest.append("source-tree-v2")
+        manifest.append(String(directories.count))
         for directory in directories {
-            manifest.append(68)
-            manifest.append(contentsOf: String(directory.utf8.count).utf8)
-            manifest.append(58)
-            manifest.append(contentsOf: directory.utf8)
+            manifest.append(directory)
         }
+        manifest.append(String(files.count))
         for name in files.keys.sorted() {
             guard let file = files[name] else {
                 throw .changed(name)
             }
-            manifest.append(70)
-            manifest.append(contentsOf: String(name.utf8.count).utf8)
-            manifest.append(58)
-            manifest.append(contentsOf: name.utf8)
-            manifest.append(contentsOf: file.digest.rawValue.utf8)
-            manifest.append(58)
-            manifest.append(contentsOf: String(file.mode.rawValue).utf8)
+            manifest.append(name)
+            manifest.append(file.digest.rawValue)
+            manifest.append(String(file.mode.rawValue))
         }
         do {
-            return try Digest.sha256(manifest)
+            return try manifest.digest()
         } catch let error {
             throw .digest(error)
         }
@@ -109,6 +135,9 @@ struct SourceTreeSeal {
             case .file:
                 files.append(child)
             case .directory:
+                if relative.isEmpty && child == SourceExcludedDirectory.swiftConfiguration.rawValue {
+                    throw .unsupportedEntry(child)
+                }
                 if relative.isEmpty && SourceExclusionPolicy.excludesDirectory(relativePath: child) {
                     continue
                 }
@@ -118,5 +147,42 @@ struct SourceTreeSeal {
                 throw .unsupportedEntry(child)
             }
         }
+    }
+}
+
+struct LeasedSourceTree: ~Copyable {
+    let seal: SourceTreeSeal
+    private let lease: FileEventLease
+    private let initialContinuity: FileEventContinuity
+
+    init(
+        seal: SourceTreeSeal,
+        lease: consuming FileEventLease,
+        initialContinuity: FileEventContinuity
+    ) {
+        self.seal = seal
+        self.lease = lease
+        self.initialContinuity = initialContinuity
+    }
+
+    borrowing func observeUnchanged() throws(SourceTreeSealError) -> FileEventWitness {
+        let before: FileEventWitness
+        do {
+            before = try lease.observeUnchanged()
+        } catch let error {
+            throw .platform(error)
+        }
+        try seal.verifyUnchanged()
+        let after: FileEventWitness
+        do {
+            after = try lease.observeUnchanged()
+        } catch let error {
+            throw .platform(error)
+        }
+        return after.including(initialContinuity.joined(with: before.continuity))
+    }
+
+    borrowing func verifyUnchanged() throws(SourceTreeSealError) -> FileEventContinuity {
+        try observeUnchanged().continuity
     }
 }

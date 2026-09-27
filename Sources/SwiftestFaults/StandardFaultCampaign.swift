@@ -1,11 +1,67 @@
 import SwiftestModel
 
+public struct SwiftPackageBoundaryScope: Sendable {
+    public let campaign: FaultCampaign
+    public let processLaunch: FaultPointID
+
+    init(campaign: FaultCampaign, processLaunch: FaultPointID) {
+        self.campaign = campaign
+        self.processLaunch = processLaunch
+    }
+
+    public func readPoint(for artifact: SwiftPackageEvidenceArtifact) -> FaultPointID {
+        artifact.faultPoint.id
+    }
+
+    public func readArtifact(for point: FaultPointID) -> SwiftPackageEvidenceArtifact? {
+        SwiftPackageEvidenceArtifact.allCases.first { readPoint(for: $0) == point }
+    }
+}
+
+public enum SwiftPackageEvidenceArtifact: String, CaseIterable, Sendable {
+    case xctest
+    case swiftTesting = "swift-testing"
+    case eventStream = "event-stream"
+
+    fileprivate var faultPoint: FaultPoint {
+        switch self {
+        case .xctest:
+            StandardFaultCampaign.point(
+                "swift-package-xctest-read-denied", .filesystem, "xctest-read",
+                .filesystemPermissionDenied, .failClosed
+            )
+        case .swiftTesting:
+            StandardFaultCampaign.point(
+                "swift-package-swift-testing-read-denied", .filesystem, "swift-testing-read",
+                .filesystemPermissionDenied, .failClosed
+            )
+        case .eventStream:
+            StandardFaultCampaign.point(
+                "swift-package-event-stream-read-denied", .filesystem, "event-stream-read",
+                .filesystemPermissionDenied, .failClosed
+            )
+        }
+    }
+}
+
 public enum StandardFaultCampaign {
+    public static func swiftPackageBoundaryScope() throws(FaultDeclarationError) -> SwiftPackageBoundaryScope {
+        let process = swiftPackageTestLaunchPoint()
+        return SwiftPackageBoundaryScope(
+            campaign: try FaultCampaign(
+                points: [process] + SwiftPackageEvidenceArtifact.allCases.map(\.faultPoint),
+                compounds: []
+            ),
+            processLaunch: process.id
+        )
+    }
+
     public static func make() throws(FaultDeclarationError) -> FaultCampaign {
+        let swiftPackagePoints = try swiftPackageBoundaryScope().campaign.points
         let points = [
-            point("process-launch", .process, "launch", .processLaunchFailure, .failClosed),
+            processLaunchPoint(),
             point("process-exit", .process, "wait", .processExit(70), .failClosed),
-            point("filesystem-read-denied", .filesystem, "read", .filesystemPermissionDenied, .failClosed),
+            filesystemReadDeniedPoint(),
             point("filesystem-write-denied", .filesystem, "write", .filesystemPermissionDenied, .failClosed),
             point("filesystem-capacity", .filesystem, "write", .filesystemCapacityExhausted, .failClosed),
             point("filesystem-partial-write", .filesystem, "commit", .filesystemPartialWrite, .recover),
@@ -25,7 +81,7 @@ public enum StandardFaultCampaign {
             point("scheduler-priority-inversion", .scheduler, "lock", .schedulerPreempted, .recover),
             point("test-runner-crash", .testRunner, "execute", .testRunnerCrashed, .failClosed),
             point("test-runner-timeout", .testRunner, "execute", .networkTimedOut, .failClosed),
-        ]
+        ] + swiftPackagePoints
         let compounds = [
             compound("partial-write-cancellation", ["filesystem-partial-write", "cancellation-before-commit"]),
             compound("timeout-clock-jump", ["network-timeout", "clock-jump"]),
@@ -35,6 +91,18 @@ public enum StandardFaultCampaign {
             compound("process-exit-torn-commit", ["process-exit", "store-torn-commit"]),
         ]
         return try FaultCampaign(points: points, compounds: compounds)
+    }
+
+    private static func processLaunchPoint() -> FaultPoint {
+        point("process-launch", .process, "launch", .processLaunchFailure, .failClosed)
+    }
+
+    private static func swiftPackageTestLaunchPoint() -> FaultPoint {
+        point("swift-package-test-process-launch", .process, "test-executable-launch", .processLaunchFailure, .failClosed)
+    }
+
+    private static func filesystemReadDeniedPoint() -> FaultPoint {
+        point("filesystem-read-denied", .filesystem, "read", .filesystemPermissionDenied, .failClosed)
     }
 
     static func point(

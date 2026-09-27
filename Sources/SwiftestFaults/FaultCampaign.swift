@@ -282,11 +282,18 @@ public struct AuditedFaultCampaign: Sendable {
     public let digest: Digest
     public let scenarioCount: EvidenceCount
     public let injectedPointCount: EvidenceCount
+    public let pointIDs: [FaultPointID]
 
-    init(digest: Digest, scenarioCount: EvidenceCount, injectedPointCount: EvidenceCount) {
+    init(
+        digest: Digest,
+        scenarioCount: EvidenceCount,
+        injectedPointCount: EvidenceCount,
+        pointIDs: [FaultPointID]
+    ) {
         self.digest = digest
         self.scenarioCount = scenarioCount
         self.injectedPointCount = injectedPointCount
+        self.pointIDs = pointIDs
     }
 }
 
@@ -395,7 +402,8 @@ public enum FaultAuditKernel {
         return AuditedFaultCampaign(
             digest: digest,
             scenarioCount: scenarioCount,
-            injectedPointCount: pointCount
+            injectedPointCount: pointCount,
+            pointIDs: campaign.points.map(\.id)
         )
     }
 

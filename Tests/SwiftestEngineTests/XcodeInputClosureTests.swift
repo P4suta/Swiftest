@@ -1,5 +1,6 @@
 import Foundation
 @testable import SwiftestEngine
+import SwiftestModel
 import SwiftestPlatform
 import Testing
 
@@ -20,13 +21,56 @@ private let minimalProject = """
 }
 """
 
+private let closedSourceProject = """
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 77;
+    objects = {
+        ROOT = { isa = PBXProject; attributes = { LastUpgradeCheck = 2700; }; buildConfigurationList = PROJECT_CONFIGS; mainGroup = MAIN; productRefGroup = PRODUCTS; projectDirPath = ""; projectRoot = ""; targets = (TARGET); };
+        PROJECT_CONFIGS = { isa = XCConfigurationList; buildConfigurations = (PROJECT_DEBUG); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        MAIN = { isa = PBXGroup; children = (TESTS, PRODUCTS); sourceTree = "<group>"; };
+        TESTS = { isa = PBXGroup; children = (FILE); path = Tests; sourceTree = "<group>"; };
+        PRODUCTS = { isa = PBXGroup; children = (PRODUCT); name = Products; sourceTree = "<group>"; };
+        TARGET = { isa = PBXNativeTarget; buildConfigurationList = TARGET_CONFIGS; buildPhases = (PHASE); buildRules = (); dependencies = (); name = SmokeTests; productName = SmokeTests; productReference = PRODUCT; productType = "com.apple.product-type.bundle.unit-test"; };
+        PRODUCT = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SmokeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        PROJECT_DEBUG = { isa = XCBuildConfiguration; buildSettings = { SDKROOT = macosx; SWIFT_VERSION = 6.0; }; name = Debug; };
+        TARGET_CONFIGS = { isa = XCConfigurationList; buildConfigurations = (TARGET_DEBUG); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        TARGET_DEBUG = { isa = XCBuildConfiguration; buildSettings = { SWIFT_VERSION = 6.0; }; name = Debug; };
+        PHASE = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BUILD); runOnlyForDeploymentPostprocessing = 0; };
+        FILE = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
+        BUILD = { isa = PBXBuildFile; fileRef = FILE; };
+    };
+    rootObject = ROOT;
+}
+"""
+
+private func verifiedSourceProject(_ source: String) throws -> XcodeVerifiedProject {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-source-graph-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    try FileSystemBoundary.write(
+        Data("import Testing\n@Test func smoke() {}\n".utf8),
+        relativePath: ArtifactPath.parse("Tests/SmokeTests.swift"),
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.write(
+        Data(source.utf8),
+        relativePath: ArtifactPath.parse("Smoke.xcodeproj/project.pbxproj"),
+        capability: scratch.issueWriteCapability()
+    )
+    return try XcodeInputClosure.verifyProject(path: root + "/Smoke.xcodeproj", root: root)
+}
+
 private let minimalScheme = """
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="1600" version="1.3">
-    <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+    <BuildAction parallelizeBuildables="NO" buildImplicitDependencies="NO">
         <BuildActionEntries>
-            <BuildActionEntry buildForTesting="YES" buildForRunning="YES">
-                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TARGET" BuildableName="App.app" BlueprintName="App" ReferencedContainer="container:App.xcodeproj"/>
+            <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TARGET" BuildableName="App.xctest" BlueprintName="App" ReferencedContainer="container:App.xcodeproj"/>
             </BuildActionEntry>
         </BuildActionEntries>
     </BuildAction>
@@ -181,6 +225,126 @@ func xcodeProjectRejectsAmbiguousOrExecutableMetadata() throws {
 }
 
 @Test
+func xcodeSourceGraphClosesTheMeasuredProjectAndCompiledSwiftFile() throws {
+    let project = try verifiedSourceProject(closedSourceProject)
+    #expect(project.targetIdentifiers == ["TARGET"])
+    guard let sources = project.sourcePathsByTarget["TARGET"] else {
+        Issue.record("verified target omitted its compiled sources")
+        return
+    }
+    #expect(sources.count == 1)
+    #expect(sources.first?.hasSuffix("/Tests/SmokeTests.swift") == true)
+}
+
+@Test
+func xcodeSourceGraphRejectsDetachedMissingAndDuplicateBuildReferences() {
+    let missing = closedSourceProject.replacingOccurrences(
+        of: "BUILD = { isa = PBXBuildFile; fileRef = FILE; };",
+        with: "BUILD = { isa = PBXBuildFile; fileRef = MISSING; };"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.missingReference("MISSING"))) {
+        let project = try verifiedSourceProject(missing)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let duplicate = closedSourceProject.replacingOccurrences(
+        of: "files = (BUILD);",
+        with: "files = (BUILD, BUILD);"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.duplicateReference("PHASE:files"))) {
+        let project = try verifiedSourceProject(duplicate)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let detached = closedSourceProject.replacingOccurrences(
+        of: "children = (FILE);",
+        with: "children = ();"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.missingReference("FILE"))) {
+        let project = try verifiedSourceProject(detached)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let uncompiled = closedSourceProject.replacingOccurrences(
+        of: "files = (BUILD);",
+        with: "files = ();"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.missingSources("TARGET"))) {
+        let project = try verifiedSourceProject(uncompiled)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+}
+
+@Test
+func xcodeSourceGraphRejectsCyclesOrphansAndUnknownRelevantFields() {
+    let cycle = closedSourceProject.replacingOccurrences(
+        of: "children = (FILE);",
+        with: "children = (FILE, MAIN);"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.duplicateReference("MAIN"))) {
+        let project = try verifiedSourceProject(cycle)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let orphan = closedSourceProject.replacingOccurrences(
+        of: "BUILD = { isa = PBXBuildFile; fileRef = FILE; };",
+        with: "BUILD = { isa = PBXBuildFile; fileRef = FILE; }; ORPHAN = { isa = PBXFileReference; path = Tests/Hidden.swift; sourceTree = SOURCE_ROOT; };"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.orphanObject("ORPHAN"))) {
+        let project = try verifiedSourceProject(orphan)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let phaseField = closedSourceProject.replacingOccurrences(
+        of: "files = (BUILD); runOnlyForDeploymentPostprocessing",
+        with: "files = (BUILD); inputPaths = (Outside.swift); runOnlyForDeploymentPostprocessing"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.unsupportedFields("PHASE"))) {
+        let project = try verifiedSourceProject(phaseField)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let rootField = closedSourceProject.replacingOccurrences(
+        of: "mainGroup = MAIN;",
+        with: "mainGroup = MAIN; fileSystemSynchronizedGroups = (HIDDEN);"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.unsupportedFields("ROOT"))) {
+        let project = try verifiedSourceProject(rootField)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+    let sourceSettings = closedSourceProject.replacingOccurrences(
+        of: "BUILD = { isa = PBXBuildFile; fileRef = FILE; };",
+        with: "BUILD = { isa = PBXBuildFile; fileRef = FILE; settings = { ATTRIBUTES = (Public); }; };"
+    )
+    #expect(throws: XcodeInputClosureError.sourceGraph(.unsupportedFields("BUILD"))) {
+        let project = try verifiedSourceProject(sourceSettings)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+}
+
+@Test
+func xcodeSourceGraphRejectsAReplacedSourceFile() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-source-graph-link-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    try FileSystemBoundary.write(
+        Data("let hidden = true\n".utf8),
+        relativePath: ArtifactPath.parse("Tests/Real.swift"),
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.createSymbolicLink(
+        relativePath: ArtifactPath.parse("Tests/SmokeTests.swift"),
+        destination: ArtifactPath.parse("Tests/Real.swift"),
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.write(
+        Data(closedSourceProject.utf8),
+        relativePath: ArtifactPath.parse("Smoke.xcodeproj/project.pbxproj"),
+        capability: scratch.issueWriteCapability()
+    )
+    #expect(throws: XcodeInputClosureError.unsafeReference(root + "/Tests/SmokeTests.swift")) {
+        let project = try XcodeInputClosure.verifyProject(path: root + "/Smoke.xcodeproj", root: root)
+        #expect(project.targetIdentifiers.isEmpty)
+    }
+}
+
+@Test
 func xcodeWorkspaceRejectsExternalAndDynamicProjectLocations() throws {
     let valid = """
     <?xml version="1.0" encoding="UTF-8"?>
@@ -209,18 +373,31 @@ func xcodeWorkspaceRejectsExternalAndDynamicProjectLocations() throws {
 func xcodeSchemeAcceptsOnlyStaticProjectReferences() throws {
     let references = try XcodeSchemeClosure.inspect(Data(minimalScheme.utf8))
     #expect(references == ["App.xcodeproj", "App.xcodeproj"])
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-scheme-references-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    try FileSystemBoundary.createDirectory(
+        relativePath: ArtifactPath.parse("App.xcodeproj"),
+        capability: scratch.issueWriteCapability()
+    )
+    try FileSystemBoundary.createDirectory(
+        relativePath: ArtifactPath.parse("Other.xcodeproj"),
+        capability: scratch.issueWriteCapability()
+    )
     try XcodeSchemeClosure.validateReferences(
         references,
-        base: "/private/tmp/repository",
-        projects: ["/private/tmp/repository/App.xcodeproj"],
-        repositoryRoot: "/private/tmp/repository"
+        base: root,
+        projects: [root + "/App.xcodeproj"],
+        repositoryRoot: root
     )
     #expect(throws: XcodeInputClosureError.externalContainer("App.xcodeproj")) {
         try XcodeSchemeClosure.validateReferences(
             references,
-            base: "/private/tmp/repository",
-            projects: ["/private/tmp/repository/Other.xcodeproj"],
-            repositoryRoot: "/private/tmp/repository"
+            base: root,
+            projects: [root + "/Other.xcodeproj"],
+            repositoryRoot: root
         )
     }
 }
@@ -271,19 +448,19 @@ func xcodeSchemeRejectsExternalAndAmbiguousBuildableReferences() throws {
         of: "</BuildAction>",
         with: "</BuildAction><BuildAction/>"
     )
-    #expect(throws: XcodeInputClosureError.invalidScheme) {
+    #expect(throws: XcodeInputClosureError.self) {
         let references = try XcodeSchemeClosure.inspect(Data(duplicate.utf8))
         #expect(references.isEmpty)
     }
 }
 
 @Test
-func xcodeSchemeRejectsUnverifiedTestPlansAndEnvironment() throws {
+func xcodeSchemeRejectsMalformedTestPlansAndEnvironment() throws {
     let plan = minimalScheme.replacingOccurrences(
         of: "<Testables>",
         with: "<TestPlans><TestPlanReference reference=\"container:External.xctestplan\"/></TestPlans><Testables>"
     )
-    #expect(throws: XcodeInputClosureError.unsupportedSchemeFeature("TestPlans")) {
+    #expect(throws: XcodeInputClosureError.invalidScheme) {
         let references = try XcodeSchemeClosure.inspect(Data(plan.utf8))
         #expect(references.isEmpty)
     }

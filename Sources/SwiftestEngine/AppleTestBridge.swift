@@ -1,14 +1,9 @@
 import Foundation
-import SwiftestModel
 import SwiftestPlatform
 
 public enum AppleTestBridgeError: Error, Equatable, Sendable {
     case platform(PlatformError)
-    case sourceChanged(String)
-    case digest(DigestError)
 }
-
-public enum StableTestingABI {}
 
 public enum XcodeTestAction: Sendable {
     case resultSummary(resultBundle: String)
@@ -71,43 +66,6 @@ public enum XcodeTestDriver {
             )
         } catch let error {
             throw .platform(error)
-        }
-    }
-}
-
-public struct SourceSeal: Equatable, Sendable {
-    public let digests: [String: Digest]
-
-    public init(digests: [String: Digest]) {
-        self.digests = digests
-    }
-}
-
-public enum SourceIntegrity {
-    public static func capture(paths: [String]) throws(AppleTestBridgeError) -> SourceSeal {
-        var digests: [String: Digest] = [:]
-        for path in paths.sorted() {
-            let data: Data
-            do {
-                data = try FileSystemBoundary.read(path: path)
-            } catch let error {
-                throw .platform(error)
-            }
-            do {
-                digests[path] = try Digest.sha256(data)
-            } catch let error {
-                throw .digest(error)
-            }
-        }
-        return SourceSeal(digests: digests)
-    }
-
-    public static func verify(_ seal: SourceSeal) throws(AppleTestBridgeError) {
-        let current = try capture(paths: Array(seal.digests.keys))
-        for (path, digest) in seal.digests {
-            if current.digests[path] != digest {
-                throw .sourceChanged(path)
-            }
         }
     }
 }

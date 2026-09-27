@@ -2,6 +2,8 @@ import Foundation
 import SwiftestCodec
 import SwiftestModel
 
+public enum StableTestingABI {}
+
 public enum SwiftTestingStreamError: Error, Equatable, Sendable {
     case codec(StrictJSONError)
     case emptyStream
@@ -79,26 +81,80 @@ public struct SwiftTestingIssue: Equatable, Sendable {
     }
 }
 
+public struct SwiftTestingAttachmentPath: Equatable, Sendable {
+    public let rawValue: String
+
+    private init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static func parse(_ value: String) throws(SwiftTestingStreamError) -> SwiftTestingAttachmentPath {
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count > 1,
+            components.first == "",
+            components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+            !value.utf8.contains(0) else {
+            throw .invalidIdentifier("attachment path")
+        }
+        return SwiftTestingAttachmentPath(rawValue: value)
+    }
+}
+
+public enum SwiftTestingEvent: Equatable, Sendable {
+    case runStarted
+    case testStarted
+    case testCaseStarted
+    case issueRecorded(SwiftTestingIssue)
+    case testCaseEnded
+    case testEnded
+    case testSkipped
+    case runEnded
+    case valueAttached(SwiftTestingAttachmentPath)
+    case testCancelled
+    case testCaseCancelled
+
+    public var kind: SwiftTestingEventKind {
+        switch self {
+        case .runStarted: .runStarted
+        case .testStarted: .testStarted
+        case .testCaseStarted: .testCaseStarted
+        case .issueRecorded: .issueRecorded
+        case .testCaseEnded: .testCaseEnded
+        case .testEnded: .testEnded
+        case .testSkipped: .testSkipped
+        case .runEnded: .runEnded
+        case .valueAttached: .valueAttached
+        case .testCancelled: .testCancelled
+        case .testCaseCancelled: .testCaseCancelled
+        }
+    }
+}
+
 public struct SwiftTestingEventRecord: Equatable, Sendable {
-    public let kind: SwiftTestingEventKind
+    public let event: SwiftTestingEvent
     public let testID: SwiftTestingTestID?
-    public let issue: SwiftTestingIssue?
     public let secondsSince1970: Double
     public let iteration: Int?
 
+    public var kind: SwiftTestingEventKind { event.kind }
+
     public init(
-        kind: SwiftTestingEventKind,
+        event: SwiftTestingEvent,
         testID: SwiftTestingTestID?,
-        issue: SwiftTestingIssue?,
         secondsSince1970: Double,
         iteration: Int? = nil
     ) {
-        self.kind = kind
+        self.event = event
         self.testID = testID
-        self.issue = issue
         self.secondsSince1970 = secondsSince1970
         self.iteration = iteration
     }
+}
+
+public struct SwiftTestingAttachedValue: Equatable, Sendable {
+    public let testID: SwiftTestingTestID?
+    public let iteration: Int?
+    public let path: SwiftTestingAttachmentPath
 }
 
 public enum SwiftTestingRecord: Equatable, Sendable {
@@ -147,23 +203,90 @@ public struct SwiftTestingCampaignSummary: Equatable, Sendable {
 
 public struct SwiftTestingCampaignEvidence: Equatable, Sendable {
     public let summary: SwiftTestingCampaignSummary
+    public let attachments: [SwiftTestingAttachedValue]
     public let bytes: Data
 
-    private init(summary: SwiftTestingCampaignSummary, bytes: Data) {
+    private init(summary: SwiftTestingCampaignSummary, attachments: [SwiftTestingAttachedValue], bytes: Data) {
         self.summary = summary
+        self.attachments = attachments
         self.bytes = bytes
     }
 
     public static func decode(_ data: Data) throws(SwiftTestingStreamError) -> SwiftTestingCampaignEvidence {
         let records = try StableTestingABI.decodeStream(data)
         let summary = try StableTestingABI.summarizeCampaign(records)
-        return SwiftTestingCampaignEvidence(summary: summary, bytes: data)
+        let attachments = records.compactMap { record -> SwiftTestingAttachedValue? in
+            guard case .event(let event) = record,
+                case .valueAttached(let path) = event.event else {
+                return nil
+            }
+            return SwiftTestingAttachedValue(testID: event.testID, iteration: event.iteration, path: path)
+        }
+        return SwiftTestingCampaignEvidence(summary: summary, attachments: attachments, bytes: data)
     }
 }
 
 private struct SwiftTestingCaseGroup: Hashable {
     let testID: SwiftTestingTestID
     let iteration: Int
+}
+
+private enum SwiftTestingEventLocus {
+    case run
+    case test(SwiftTestingTestID, repetition: Int?)
+
+    init(_ event: SwiftTestingEventRecord) throws(SwiftTestingStreamError) {
+        switch (event.testID, event.iteration) {
+        case (nil, nil):
+            self = .run
+        case (.some(let id), nil):
+            self = .test(id, repetition: nil)
+        case (.some(let id), .some(let repetition)) where repetition > 0:
+            self = .test(id, repetition: repetition)
+        default:
+            throw .invalidSequence("invalid event locus")
+        }
+    }
+
+    func requireCompatible(with kind: SwiftTestingEventKind) throws(SwiftTestingStreamError) {
+        switch (kind, self) {
+        case (.runStarted, .run), (.runEnded, .run),
+             (.testStarted, .test), (.testEnded, .test),
+             (.testSkipped, .test), (.testCancelled, .test),
+             (.testCaseStarted, .test(_, repetition: .some)),
+             (.testCaseEnded, .test(_, repetition: .some)),
+             (.testCaseCancelled, .test(_, repetition: .some)),
+             (.issueRecorded, _), (.valueAttached, _):
+            return
+        default:
+            throw .invalidSequence("event kind and locus disagree")
+        }
+    }
+}
+
+private enum SwiftTestingScopedEvent {
+    case issue
+    case attachment
+
+    var label: String {
+        switch self {
+        case .issue: "issue"
+        case .attachment: "attachment"
+        }
+    }
+}
+
+private enum SwiftTestingRepetition: Equatable {
+    case unspecified
+    case numbered(Int)
+
+    init(_ value: Int?) {
+        if let value {
+            self = .numbered(value)
+        } else {
+            self = .unspecified
+        }
+    }
 }
 
 private struct SwiftTestingCaseProgress {
@@ -235,7 +358,7 @@ extension StableTestingABI {
     ) throws(SwiftTestingStreamError) -> SwiftTestingRunSummary {
         var discovered: [SwiftTestingTestID: SwiftTestingTestKind] = [:]
         var functions = Set<SwiftTestingTestID>()
-        var started = Set<SwiftTestingTestID>()
+        var started: [SwiftTestingTestID: SwiftTestingRepetition] = [:]
         var completed = Set<SwiftTestingTestID>()
         var skipped = Set<SwiftTestingTestID>()
         var cancellationMarkers = Set<SwiftTestingTestID>()
@@ -258,6 +381,8 @@ extension StableTestingABI {
                 if runEnded {
                     throw .invalidSequence("event after run end")
                 }
+                let locus = try SwiftTestingEventLocus(event)
+                try locus.requireCompatible(with: event.kind)
                 if event.kind == .runStarted {
                     if runStarted {
                         throw .invalidSequence("duplicate run start")
@@ -272,11 +397,16 @@ extension StableTestingABI {
                     runEnded = true
                     continue
                 }
-                if event.kind == .issueRecorded, let issue = event.issue {
+                if case .issueRecorded(let issue) = event.event {
+                    try requireActiveEventLocus(
+                        locus,
+                        discovered: discovered,
+                        started: started,
+                        completed: completed,
+                        caseProgress: caseProgress,
+                        context: .issue
+                    )
                     if let id = event.testID {
-                        guard discovered[id] != nil, started.contains(id), !completed.contains(id) else {
-                            throw .invalidSequence("issue outside active test")
-                        }
                         if issue.isFailure {
                             failing.insert(id)
                         }
@@ -284,15 +414,26 @@ extension StableTestingABI {
                         runIssues += 1
                     }
                 }
+                if case .valueAttached = event.event {
+                    try requireActiveEventLocus(
+                        locus,
+                        discovered: discovered,
+                        started: started,
+                        completed: completed,
+                        caseProgress: caseProgress,
+                        context: .attachment
+                    )
+                }
                 switch event.kind {
                 case .testStarted:
                     guard let id = event.testID, discovered[id] != nil,
-                        !skipped.contains(id), started.insert(id).inserted else {
+                        !skipped.contains(id),
+                        started.updateValue(SwiftTestingRepetition(event.iteration), forKey: id) == nil else {
                         throw .invalidSequence("missing or duplicate test start")
                     }
                 case .testEnded:
                     guard let id = event.testID,
-                        started.contains(id),
+                        started[id] == SwiftTestingRepetition(event.iteration),
                         !caseProgress.contains(where: { $0.key.testID == id && $0.value.active != 0 }),
                         completed.insert(id).inserted else {
                         throw .invalidSequence("test end without start")
@@ -303,20 +444,24 @@ extension StableTestingABI {
                     }
                 case .testSkipped:
                     guard let id = event.testID, discovered[id] != nil,
-                        !started.contains(id), skipped.insert(id).inserted else {
+                        started[id] == nil, skipped.insert(id).inserted else {
                         throw .invalidSequence("missing or duplicate test skip")
                     }
                 case .testCancelled:
-                    guard let id = event.testID, started.contains(id),
+                    guard let id = event.testID,
+                        started[id] == SwiftTestingRepetition(event.iteration),
                         !completed.contains(id), cancellationMarkers.insert(id).inserted else {
                         throw .invalidSequence("missing or duplicate test cancellation")
                     }
                 case .testCaseStarted, .testCaseEnded, .testCaseCancelled:
                     guard let id = event.testID, functions.contains(id),
                         discovered[id] == .function(parameterized: true),
-                        started.contains(id), !completed.contains(id),
+                        started[id] != nil, !completed.contains(id),
                         let iteration = event.iteration, iteration > 0 else {
                         throw .invalidSequence("case event without active parent and iteration")
+                    }
+                    if case .numbered(let activeRepetition) = started[id], activeRepetition != iteration {
+                        throw .invalidSequence("case repetition disagrees with parent test")
                     }
                     let group = SwiftTestingCaseGroup(testID: id, iteration: iteration)
                     var progress: SwiftTestingCaseProgress
@@ -352,7 +497,7 @@ extension StableTestingABI {
         if !runStarted || !runEnded {
             throw .invalidSequence("incomplete run")
         }
-        if !started.isSubset(of: completed) {
+        if !Set(started.keys).isSubset(of: completed) {
             throw .invalidSequence("unterminated test")
         }
         let terminal = completed.union(skipped)
@@ -387,6 +532,33 @@ extension StableTestingABI {
             )
         } catch let error {
             throw .count(error)
+        }
+    }
+
+    private static func requireActiveEventLocus(
+        _ locus: SwiftTestingEventLocus,
+        discovered: [SwiftTestingTestID: SwiftTestingTestKind],
+        started: [SwiftTestingTestID: SwiftTestingRepetition],
+        completed: Set<SwiftTestingTestID>,
+        caseProgress: [SwiftTestingCaseGroup: SwiftTestingCaseProgress],
+        context: SwiftTestingScopedEvent
+    ) throws(SwiftTestingStreamError) {
+        switch locus {
+        case .run:
+            return
+        case .test(let id, let repetition):
+            guard discovered[id] != nil, let activeRepetition = started[id], !completed.contains(id) else {
+                throw .invalidSequence(context.label + " outside active test")
+            }
+            if let repetition, case .numbered(let expected) = activeRepetition, repetition != expected {
+                throw .invalidSequence(context.label + " outside active test repetition")
+            }
+            if discovered[id] == .function(parameterized: true), let repetition {
+                let group = SwiftTestingCaseGroup(testID: id, iteration: repetition)
+                guard let progress = caseProgress[group], progress.active > 0 else {
+                    throw .invalidSequence(context.label + " outside active test case")
+                }
+            }
         }
     }
 
@@ -575,33 +747,40 @@ extension StableTestingABI {
         } else {
             iteration = nil
         }
-        let issue: SwiftTestingIssue?
+        let event: SwiftTestingEvent
         if fields["issue"] != nil {
             if kind != .issueRecorded {
                 throw .invalidEventPayload("issue outside issueRecorded")
             }
-            issue = try decodeIssue(try codecValue(&reader, "issue"))
-        } else {
-            issue = nil
-        }
-        if fields["attachment"] != nil {
+            event = .issueRecorded(try decodeIssue(try codecValue(&reader, "issue")))
+        } else if kind == .issueRecorded {
+            throw .invalidEventPayload("missing issue")
+        } else if fields["attachment"] != nil {
             if kind != .valueAttached {
                 throw .invalidEventPayload("attachment outside valueAttached")
             }
-            let attachment = try codecValue(&reader, "attachment")
-            try validateAttachment(attachment)
-        }
-        if kind == .issueRecorded && issue == nil {
-            throw .invalidEventPayload("missing issue")
-        }
-        if kind == .valueAttached && fields["attachment"] == nil {
+            event = .valueAttached(try decodeAttachment(try codecValue(&reader, "attachment")))
+        } else if kind == .valueAttached {
             throw .invalidEventPayload("missing attachment")
+        } else {
+            switch kind {
+            case .runStarted: event = .runStarted
+            case .testStarted: event = .testStarted
+            case .testCaseStarted: event = .testCaseStarted
+            case .testCaseEnded: event = .testCaseEnded
+            case .testEnded: event = .testEnded
+            case .testSkipped: event = .testSkipped
+            case .runEnded: event = .runEnded
+            case .testCancelled: event = .testCancelled
+            case .testCaseCancelled: event = .testCaseCancelled
+            case .issueRecorded, .valueAttached:
+                throw .invalidEventPayload("missing event payload")
+            }
         }
         try codecFinish(reader)
         return SwiftTestingEventRecord(
-            kind: kind,
+            event: event,
             testID: testID,
-            issue: issue,
             secondsSince1970: seconds,
             iteration: iteration
         )
@@ -665,13 +844,11 @@ extension StableTestingABI {
         try codecFinish(reader)
     }
 
-    private static func validateAttachment(_ value: JSONValue) throws(SwiftTestingStreamError) {
+    private static func decodeAttachment(_ value: JSONValue) throws(SwiftTestingStreamError) -> SwiftTestingAttachmentPath {
         var reader = try codecObject(value)
-        let path = try codecString(&reader, "path")
-        if !path.hasPrefix("/") {
-            throw .invalidIdentifier("attachment path")
-        }
+        let path = try SwiftTestingAttachmentPath.parse(codecString(&reader, "path"))
         try codecFinish(reader)
+        return path
     }
 
     private static func validateBug(_ value: JSONValue) throws(SwiftTestingStreamError) {

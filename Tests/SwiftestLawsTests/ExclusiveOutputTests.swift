@@ -3,6 +3,10 @@ import SwiftestModel
 import SwiftestPlatform
 import Testing
 
+private enum OutputValidationFailure: Error, Equatable {
+    case rejected
+}
+
 @Test
 func exclusiveOutputWritesOneNewFileAndRejectsReuse() throws {
     let scratch = try ScratchDirectoryOwner(
@@ -46,6 +50,120 @@ func exclusiveOutputRejectsCreationRaceWithoutOverwriting() throws {
         #expect(error == .outputExists(outputPath))
     }
     #expect(try FileSystemBoundary.read(path: outputPath) == Data("racer".utf8))
+}
+
+@Test
+func exclusiveOutputDiscardsStagedDataWhenPrecommitValidationFails() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-exclusive-precommit-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    let owner = try ExclusiveOutputOwner(absolutePath: root + "/report.json")
+    do {
+        try owner.writeValidated(Data("untrusted".utf8)) {
+            throw OutputValidationFailure.rejected
+        }
+        Issue.record("accepted failed precommit validation")
+    } catch let error as OutputValidationFailure {
+        #expect(error == .rejected)
+    }
+    #expect(try FileSystemBoundary.list(path: root).isEmpty)
+}
+
+@Test
+func exclusiveOutputValidatesOnceBeforeAtomicInstallation() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-exclusive-validation-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    let owner = try ExclusiveOutputOwner(absolutePath: root + "/report.json")
+    var checks = 0
+    try owner.writeValidated(Data("trusted".utf8)) {
+        checks += 1
+        if checks != 1 {
+            throw OutputValidationFailure.rejected
+        }
+    }
+    #expect(checks == 1)
+    #expect(try FileSystemBoundary.read(path: root + "/report.json") == Data("trusted".utf8))
+    #expect(try FileSystemBoundary.list(path: root) == ["report.json"])
+}
+
+@Test
+func exclusiveOutputRetainsCompetitorCreatedDuringValidation() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-exclusive-install-race-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let root = try CanonicalPathBoundary.directory(scratch.path)
+    let path = try ArtifactPath.parse("report.json")
+    let owner = try ExclusiveOutputOwner(absolutePath: root + "/report.json")
+    do {
+        try owner.writeValidated(Data("untrusted".utf8)) {
+            try FileSystemBoundary.write(
+                Data("competitor".utf8),
+                relativePath: path,
+                capability: scratch.issueWriteCapability()
+            )
+        }
+        Issue.record("overwrote competitor output")
+    } catch let error as PlatformError {
+        #expect(error == .outputExists(root + "/report.json"))
+    }
+    #expect(try FileSystemBoundary.read(path: root + "/report.json") == Data("competitor".utf8))
+    #expect(try FileSystemBoundary.list(path: root) == ["report.json"])
+}
+
+@Test
+func exclusiveOutputRejectsWatchedSourceChangeBeforeCommit() throws {
+    let source = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-exclusive-source-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let destination = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-exclusive-output-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let sourceRoot = try CanonicalPathBoundary.directory(source.path)
+    let outputRoot = try CanonicalPathBoundary.directory(destination.path)
+    let input = try ArtifactPath.parse("Input.swift")
+    let original = Data("let value = 1\n".utf8)
+    try FileSystemBoundary.write(original, relativePath: input, capability: source.issueWriteCapability())
+    let lease = try FileEventLease(inputs: [
+        WatchedInput(path: sourceRoot, kind: .directory),
+        WatchedInput(path: sourceRoot + "/Input.swift", kind: .file),
+    ])
+    let owner = try ExclusiveOutputOwner(absolutePath: outputRoot + "/report.json")
+    var checks = 0
+    do {
+        try owner.writeValidated(Data("stale".utf8)) {
+            checks += 1
+            if checks == 1 {
+                try FileSystemBoundary.write(
+                    Data("let value = 2\n".utf8),
+                    relativePath: input,
+                    capability: source.issueWriteCapability()
+                )
+                try FileSystemBoundary.write(
+                    original,
+                    relativePath: input,
+                    capability: source.issueWriteCapability()
+                )
+            }
+            try lease.requireEventFree()
+        }
+        Issue.record("source edit during output commit was accepted")
+    } catch let error as PlatformError {
+        guard case .changedWhileWatched = error else {
+            Issue.record("wrong source event error: \(error)")
+            return
+        }
+    }
+    #expect(checks == 1)
+    #expect(try FileSystemBoundary.list(path: outputRoot).isEmpty)
+    #expect(try FileSystemBoundary.read(root: sourceRoot, relativePath: input) == original)
 }
 
 @Test

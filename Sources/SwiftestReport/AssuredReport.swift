@@ -15,20 +15,24 @@ public enum ReportError: Error, Equatable, Sendable {
     case invalidVerdict(String)
     case invalidScope(String)
     case invalidFaultStatus(String)
+    case untrustedVerifiedFaultClaim
     case invalidDiagnostic(String)
     case invalidScore(EvidenceCount, EvidenceCount)
     case invalidFaultSummary(EvidenceCount?, EvidenceCount?)
+    case invalidFaultBinding(expected: Digest, actual: Digest)
     case decisionMismatch(expected: Verdict, actual: Verdict)
 }
 
 public enum FaultEvidence: Sendable {
     case unverified
     case structural(AuditedFaultCampaign)
+    case partial(AuditedFaultCampaign, targetEvidence: Digest)
 }
 
 public enum FaultEvidenceStatus: String, CaseIterable, Sendable {
     case verified
     case structural
+    case partial
     case unverified
 }
 
@@ -37,7 +41,7 @@ public enum FaultVerdictDecision {
         switch evidence {
         case .verified:
             base
-        case .structural, .unverified:
+        case .structural, .partial, .unverified:
             switch base {
             case .assured, .changeAssured, .scopeAssured, .gaps:
                 .gaps
@@ -75,6 +79,8 @@ public struct AssuredReport: Sendable {
         switch faults {
         case .structural:
             FaultVerdictDecision.decide(base: catalog.verdict, evidence: .structural)
+        case .partial:
+            FaultVerdictDecision.decide(base: catalog.verdict, evidence: .partial)
         case .unverified:
             FaultVerdictDecision.decide(base: catalog.verdict, evidence: .unverified)
         }
@@ -86,7 +92,19 @@ public struct AssuredReport: Sendable {
             catalog.diagnostics + [Diagnostic(
                 code: .missingEvidence,
                 subject: "fault-behavior",
-                detail: "fault handling not independently observed"
+                detail: "full target fault coverage and independent behavior not established"
+            )]
+        case .partial(let audit, _):
+            catalog.diagnostics + audit.pointIDs.map { point in
+                Diagnostic(
+                    code: .missingEvidence,
+                    subject: "target-fault-response:" + point.rawValue,
+                    detail: "first-party boundary rejected the injected fault; target response unverified"
+                )
+            } + [Diagnostic(
+                code: .missingEvidence,
+                subject: "fault-coverage",
+                detail: "full target campaign and independent review remain unverified"
             )]
         case .unverified:
             catalog.diagnostics + [Diagnostic(
@@ -132,6 +150,8 @@ public struct ReportEnvelope: Equatable, Sendable {
     public let faultDigest: Digest?
     public let faultScenarioCount: EvidenceCount?
     public let injectedFaultCount: EvidenceCount?
+    public let faultCampaignDigest: Digest?
+    public let faultTargetEvidenceDigest: Digest?
 
     public init(
         schema: SchemaVersion,
@@ -146,7 +166,9 @@ public struct ReportEnvelope: Equatable, Sendable {
         faultStatus: FaultEvidenceStatus,
         faultDigest: Digest?,
         faultScenarioCount: EvidenceCount?,
-        injectedFaultCount: EvidenceCount?
+        injectedFaultCount: EvidenceCount?,
+        faultCampaignDigest: Digest? = nil,
+        faultTargetEvidenceDigest: Digest? = nil
     ) {
         self.schema = schema
         self.run = run
@@ -161,6 +183,8 @@ public struct ReportEnvelope: Equatable, Sendable {
         self.faultDigest = faultDigest
         self.faultScenarioCount = faultScenarioCount
         self.injectedFaultCount = injectedFaultCount
+        self.faultCampaignDigest = faultCampaignDigest
+        self.faultTargetEvidenceDigest = faultTargetEvidenceDigest
     }
 }
 
@@ -183,16 +207,20 @@ public enum ReportCodec {
                 "injectedPoints": .number(String(audit.injectedPointCount.rawValue)),
                 "scenarios": .number(String(audit.scenarioCount.rawValue)),
             ])
+        case .partial(let audit, let targetEvidence):
+            let bound = try partialFaultDigest(campaign: audit.digest, target: targetEvidence)
+            faultValue = .object([
+                "status": .string(FaultEvidenceStatus.partial.rawValue),
+                "digest": .string(bound.rawValue),
+                "campaignDigest": .string(audit.digest.rawValue),
+                "targetEvidenceDigest": .string(targetEvidence.rawValue),
+                "injectedPoints": .number(String(audit.injectedPointCount.rawValue)),
+                "scenarios": .number(String(audit.scenarioCount.rawValue)),
+            ])
         }
         let value = JSONValue.object([
             "catalogDigest": .string(digest.rawValue),
-            "diagnostics": .array(report.diagnostics.map { diagnostic in
-                .object([
-                    "code": .string(diagnostic.code.rawValue),
-                    "subject": .string(diagnostic.subject),
-                    "detail": .string(diagnostic.detail),
-                ])
-            }),
+            "diagnostics": .array(report.diagnostics.map(diagnosticValue)),
             "executionCount": .number(String(report.catalog.evidence.executionCount.rawValue)),
             "faults": faultValue,
             "run": .string(report.catalog.evidence.run.rawValue),
@@ -289,14 +317,32 @@ public enum ReportCodec {
         let faultDigestRaw: String?
         let faultScenarioCountRaw: Int?
         let injectedFaultCountRaw: Int?
+        let campaignDigestRaw: String?
+        let targetEvidenceDigestRaw: String?
         switch faultStatus {
         case .unverified:
             faultDigestRaw = nil
             faultScenarioCountRaw = nil
             injectedFaultCountRaw = nil
-        case .structural, .verified:
+            campaignDigestRaw = nil
+            targetEvidenceDigestRaw = nil
+        case .structural:
             do {
                 faultDigestRaw = try faultReader.requiredString("digest")
+                injectedFaultCountRaw = try faultReader.requiredInteger("injectedPoints")
+                faultScenarioCountRaw = try faultReader.requiredInteger("scenarios")
+            } catch let error {
+                throw .codec(error)
+            }
+            campaignDigestRaw = nil
+            targetEvidenceDigestRaw = nil
+        case .verified:
+            throw .untrustedVerifiedFaultClaim
+        case .partial:
+            do {
+                faultDigestRaw = try faultReader.requiredString("digest")
+                campaignDigestRaw = try faultReader.requiredString("campaignDigest")
+                targetEvidenceDigestRaw = try faultReader.requiredString("targetEvidenceDigest")
                 injectedFaultCountRaw = try faultReader.requiredInteger("injectedPoints")
                 faultScenarioCountRaw = try faultReader.requiredInteger("scenarios")
             } catch let error {
@@ -376,6 +422,8 @@ public enum ReportCodec {
         }
         let digest: Digest
         let faultDigest: Digest?
+        let campaignDigest: Digest?
+        let targetEvidenceDigest: Digest?
         do {
             digest = try .parse(digestRaw)
             if let faultDigestRaw {
@@ -383,8 +431,24 @@ public enum ReportCodec {
             } else {
                 faultDigest = nil
             }
+            if let campaignDigestRaw {
+                campaignDigest = try .parse(campaignDigestRaw)
+            } else {
+                campaignDigest = nil
+            }
+            if let targetEvidenceDigestRaw {
+                targetEvidenceDigest = try .parse(targetEvidenceDigestRaw)
+            } else {
+                targetEvidenceDigest = nil
+            }
         } catch let error {
             throw .digest(error)
+        }
+        if let campaignDigest, let targetEvidenceDigest, let faultDigest {
+            let expected = try partialFaultDigest(campaign: campaignDigest, target: targetEvidenceDigest)
+            if expected != faultDigest {
+                throw .invalidFaultBinding(expected: expected, actual: faultDigest)
+            }
         }
         return ReportEnvelope(
             schema: schema,
@@ -399,8 +463,23 @@ public enum ReportCodec {
             faultStatus: faultStatus,
             faultDigest: faultDigest,
             faultScenarioCount: faultScenarioCount,
-            injectedFaultCount: injectedFaultCount
+            injectedFaultCount: injectedFaultCount,
+            faultCampaignDigest: campaignDigest,
+            faultTargetEvidenceDigest: targetEvidenceDigest
         )
+    }
+
+    private static func partialFaultDigest(campaign: Digest, target: Digest) throws(ReportError) -> Digest {
+        let value = JSONValue.array([
+            .string("swiftest-partial-fault-v1"),
+            .string(campaign.rawValue),
+            .string(target.rawValue),
+        ])
+        do {
+            return try StrictJSON.canonicalDigest(value)
+        } catch let error {
+            throw .digest(error)
+        }
     }
 
     public static func schema() -> JSONValue {
@@ -449,13 +528,16 @@ public enum ReportCodec {
                         .object([
                             "additionalProperties": .boolean(false),
                             "properties": .object([
-                                "status": .object(["const": .string("verified")]),
+                                "status": .object(["const": .string("partial")]),
                                 "digest": .object(["pattern": .string("^[0-9a-f]{64}$"), "type": .string("string")]),
+                                "campaignDigest": .object(["pattern": .string("^[0-9a-f]{64}$"), "type": .string("string")]),
+                                "targetEvidenceDigest": .object(["pattern": .string("^[0-9a-f]{64}$"), "type": .string("string")]),
                                 "injectedPoints": .object(["minimum": .number("1"), "type": .string("integer")]),
                                 "scenarios": .object(["minimum": .number("1"), "type": .string("integer")]),
                             ]),
                             "required": .array([
-                                .string("status"), .string("digest"), .string("injectedPoints"), .string("scenarios"),
+                                .string("status"), .string("digest"), .string("campaignDigest"),
+                                .string("targetEvidenceDigest"), .string("injectedPoints"), .string("scenarios"),
                             ]),
                             "type": .string("object"),
                         ]),
@@ -491,15 +573,21 @@ public enum ReportCodec {
     }
 
     private static func catalogValue(_ catalog: EvidenceCatalog) -> JSONValue {
-        let reviewEvidence: JSONValue
-        if let evidence = catalog.review.evidence {
-            reviewEvidence = .string(evidence.rawValue)
-        } else {
-            reviewEvidence = .null
-        }
         return .object([
-            "preservationClaims": .array(catalog.preservationClaims.map { .string($0.rawValue) }),
-            "detectionClaims": .array(catalog.detectionClaims.map { .string($0.rawValue) }),
+            "inputContinuity": .string(catalog.inputContinuity.rawValue),
+            "runtimePipeline": .string(catalog.runtimePipeline.rawValue),
+            "preservationClaims": .array(catalog.preservationClaims.definitions.map { claim in
+                .object([
+                    "id": .string(claim.id.rawValue),
+                    "name": .string(claim.name),
+                ])
+            }),
+            "detectionClaims": .array(catalog.detectionClaims.definitions.map { claim in
+                .object([
+                    "id": .string(claim.id.rawValue),
+                    "name": .string(claim.name),
+                ])
+            }),
             "claimObservations": .array(catalog.claimObservations.map { observation in
                 .object([
                     "claim": .string(observation.claim.rawValue),
@@ -510,12 +598,17 @@ public enum ReportCodec {
             }),
             "executionCount": .number(String(catalog.executionCount.rawValue)),
             "failures": .array(catalog.failures.map(failureValue)),
-            "laws": .array(catalog.lawObservations.map {
-                .object(["code": .string($0.code.rawValue), "status": .string($0.status.rawValue)])
+            "lawObservations": .array(catalog.lawObservations.map {
+                .object([
+                    "code": .string($0.code.rawValue),
+                    "status": .string($0.status.rawValue),
+                    "diagnostic": diagnosticValue($0.diagnostic),
+                ])
             }),
             "mutationObservations": .array(catalog.mutationObservations.map { observation in
                 .object([
                     "mutant": .string(observation.mutant.rawValue),
+                    "world": .string(observation.world.rawValue),
                     "reached": .string(observation.reached.rawValue),
                     "infected": .string(observation.infected.rawValue),
                     "detected": .string(observation.detected.rawValue),
@@ -524,24 +617,78 @@ public enum ReportCodec {
             "mutants": .array(catalog.mutants.map { .string($0.rawValue) }),
             "review": .object([
                 "status": .string(catalog.review.status.rawValue),
-                "evidence": reviewEvidence,
+                "evidence": digestValue(catalog.review.evidence),
             ]),
             "run": .string(catalog.run.rawValue),
             "scope": .string(catalog.scope.rawValue),
-            "schemas": .array(catalog.schemaObservations.map {
+            "schemaObservations": .array(catalog.schemaObservations.map {
                 .object([
                     "status": .string($0.status.rawValue),
                     "version": .number(String($0.version.rawValue)),
                 ])
             }),
-            "worlds": .array(catalog.worlds.map { .string($0.rawValue) }),
+            "worlds": .array(catalog.worlds.definitions.map(worldValue)),
         ])
     }
 
+    private static func worldValue(_ declared: DeclaredWorld) -> JSONValue {
+        switch declared {
+        case .unmodeledHost(let id):
+            return .object([
+                "kind": .string("unmodeled-host"),
+                "id": .string(id.rawValue),
+            ])
+        case .modeled(let world):
+            return .object([
+                "kind": .string("modeled"),
+                "id": .string(world.id.rawValue),
+                "build": .string(world.build.rawValue),
+                "operatingSystem": .string(world.operatingSystem.rawValue),
+                "device": .object([
+                    "id": .string(world.device.id.rawValue),
+                    "family": .string(world.device.family.rawValue),
+                ]),
+                "locale": .string(world.locale.rawValue),
+                "layoutDirection": .string(world.layoutDirection.rawValue),
+                "appearance": .string(world.appearance.rawValue),
+                "accessibility": .string(world.accessibility.rawValue),
+                "permission": .object([
+                    "kind": .string(world.permission.kind.rawValue),
+                    "state": .string(world.permission.state.rawValue),
+                ]),
+                "location": .string(world.location.rawValue),
+                "biometrics": .string(world.biometrics.rawValue),
+                "lifecycle": .string(world.lifecycle.rawValue),
+                "data": .string(world.data.rawValue),
+                "serviceFault": .string(world.serviceFault.rawValue),
+                "cancellation": .string(world.cancellation.rawValue),
+                "schedule": .object([
+                    "id": .string(world.schedule.id.rawValue),
+                    "decisions": .array(world.schedule.decisions.map { .number(String($0)) }),
+                ]),
+            ])
+        }
+    }
+
+    private static func digestValue(_ digest: Digest?) -> JSONValue {
+        return switch digest {
+        case .some(let value):
+            .string(value.rawValue)
+        case .none:
+            .null
+        }
+    }
+
     private static func diagnosticValue(_ diagnostic: Diagnostic?) -> JSONValue {
-        guard let diagnostic else {
+        switch diagnostic {
+        case .some(let value):
+            return diagnosticValue(value)
+        case .none:
             return .null
         }
+    }
+
+    private static func diagnosticValue(_ diagnostic: Diagnostic) -> JSONValue {
         return .object([
             "code": .string(diagnostic.code.rawValue),
             "subject": .string(diagnostic.subject),
@@ -574,20 +721,20 @@ public enum ReportCodec {
             }
         case .mutant(let mutant):
             switch mutant {
-            case .survived(let id, let claim):
+            case .survived(let mutant, let claim):
                 return .object([
                     "kind": .string("mutant-survived"),
-                    "mutant": .string(id.rawValue),
+                    "mutant": .string(mutant.rawValue),
                     "claim": .string(claim.rawValue),
                 ])
-            case .notReached(let id):
-                return .object(["kind": .string("mutant-not-reached"), "mutant": .string(id.rawValue)])
-            case .notInfected(let id):
-                return .object(["kind": .string("mutant-not-infected"), "mutant": .string(id.rawValue)])
-            case .compilerRejected(let id):
-                return .object(["kind": .string("mutant-compiler-rejected"), "mutant": .string(id.rawValue)])
-            case .equivalentWithoutProof(let id):
-                return .object(["kind": .string("mutant-equivalence-unproved"), "mutant": .string(id.rawValue)])
+            case .notReached(let mutant):
+                return .object(["kind": .string("mutant-not-reached"), "mutant": .string(mutant.rawValue)])
+            case .notInfected(let mutant):
+                return .object(["kind": .string("mutant-not-infected"), "mutant": .string(mutant.rawValue)])
+            case .compilerRejected(let mutant):
+                return .object(["kind": .string("mutant-compiler-rejected"), "mutant": .string(mutant.rawValue)])
+            case .equivalentWithoutProof(let mutant):
+                return .object(["kind": .string("mutant-equivalence-unproved"), "mutant": .string(mutant.rawValue)])
             }
         case .apparatus(let apparatus):
             let kind: String

@@ -30,11 +30,26 @@ public struct CanonicalDirectoryIdentity: Sendable {
 }
 
 public enum CanonicalPathBoundary {
-    public static func directory(_ path: String) throws(PlatformError) -> String {
+    public static func currentAccountHomeDirectory() throws(PlatformError) -> String {
+        guard let home = ABIAdapter.accountHomeDirectory() else {
+            throw .invalidRoot("account-home")
+        }
+        let identity = try captureDirectoryIdentity(home)
+        guard identity.canonicalPath == home else {
+            throw .invalidRoot("account-home")
+        }
+        return home
+    }
+
+    public static func existing(_ path: String) throws(PlatformError) -> String {
         guard let canonical = ABIAdapter.canonicalPath(path) else {
             throw .invalidRoot(path)
         }
         return canonical
+    }
+
+    public static func directory(_ path: String) throws(PlatformError) -> String {
+        try existing(path)
     }
 
     public static func captureDirectoryIdentity(

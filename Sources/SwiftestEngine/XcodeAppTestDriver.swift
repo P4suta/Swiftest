@@ -9,13 +9,18 @@ public enum XcodeAppTestError: Error, Equatable, Sendable {
     case coverage(XCCoverageError)
     case digest(DigestError)
     case inputClosure(XcodeInputClosureError)
+    case inventory(XcodeTestInventoryError)
+    case manifest(XcodeRunManifestError)
+    case destination(XcodeDestinationError)
+    case unsupportedDestination
     case invalidContainer(String)
     case ambiguousContainer(String)
     case invalidScheme
-    case invalidDestination
     case missingXctestrun
     case ambiguousXctestrun
     case invalidXctestrunVersion(String)
+    case testPlanMismatch(String)
+    case configurationMismatch(String)
     case noExecutedTests
     case exitDisagreesWithSummary(Int32)
 }
@@ -83,7 +88,13 @@ public struct XcodeContainer: Equatable, Sendable {
         guard entry == .directory else {
             throw .invalidContainer(path)
         }
-        return XcodeContainer(path: URL(fileURLWithPath: path).standardizedFileURL.path, kind: kind)
+        let canonical: String
+        do {
+            canonical = try CanonicalPathBoundary.directory(path)
+        } catch let error {
+            throw .platform(error)
+        }
+        return XcodeContainer(path: canonical, kind: kind)
     }
 }
 
@@ -92,19 +103,28 @@ public struct XcodeAppTestResult: Equatable, Sendable {
     public let coverage: XCCoverageReport
     public let summaryDigest: Digest
     public let coverageDigest: Digest
+    public let enumerationDigest: Digest
+    public let executedTestsDigest: Digest
+    public let manifestDigest: Digest
     public let exitCode: Int32
 
-    public init(
+    fileprivate init(
         summary: XCResultSummary,
         coverage: XCCoverageReport,
         summaryDigest: Digest,
         coverageDigest: Digest,
+        enumerationDigest: Digest,
+        executedTestsDigest: Digest,
+        manifestDigest: Digest,
         exitCode: Int32
     ) {
         self.summary = summary
         self.coverage = coverage
         self.summaryDigest = summaryDigest
         self.coverageDigest = coverageDigest
+        self.enumerationDigest = enumerationDigest
+        self.executedTestsDigest = executedTestsDigest
+        self.manifestDigest = manifestDigest
         self.exitCode = exitCode
     }
 }
@@ -120,11 +140,18 @@ public enum XcodeAppTestDriver {
         if scheme.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw .invalidScheme
         }
-        if destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw .invalidDestination
-        }
+        let destinationSpec: XcodeDestination
         do {
-            try XcodeInputClosure.verify(
+            destinationSpec = try XcodeDestination.parse(destination)
+        } catch let error {
+            throw .destination(error)
+        }
+        guard destinationSpec.platform == .macOS else {
+            throw .unsupportedDestination
+        }
+        let verifiedPlan: XcodeVerifiedPlan
+        do {
+            verifiedPlan = try XcodeInputClosure.verify(
                 container: container,
                 repositoryRoot: workingDirectory,
                 scheme: scheme
@@ -147,7 +174,7 @@ public enum XcodeAppTestDriver {
         let build = buildInvocation(
             container: container,
             scheme: scheme,
-            destination: destination,
+            destination: destinationSpec.rawValue,
             derivedData: derivedData,
             resultBundle: buildBundle,
             workingDirectory: workingDirectory
@@ -163,9 +190,52 @@ public enum XcodeAppTestDriver {
         }
         let xctestrun = try findXctestrun(products: derivedData + "/Build/Products")
         try validateXctestrunVersion(path: xctestrun, workingDirectory: workingDirectory, scratch: scratch)
+        let manifestOutput: ProcessOutput
+        do {
+            manifestOutput = try XcodeTestDriver.run(manifestInvocation(
+                xctestrun: xctestrun,
+                workingDirectory: workingDirectory
+            ), scratch: scratch)
+        } catch let error {
+            throw .bridge(error)
+        }
+        let manifestData = Data(manifestOutput.standardOutput.utf8)
+        let manifest: XcodeRunManifest
+        do {
+            manifest = try XcodeRunManifest.decode(
+                manifestData,
+                verifiedPlan: verifiedPlan,
+                scheme: scheme,
+                container: container,
+                repositoryRoot: workingDirectory
+            )
+        } catch let error {
+            throw .manifest(error)
+        }
+        let enumerationOutput: ProcessOutput
+        do {
+            enumerationOutput = try XcodeTestDriver.run(enumerateInvocation(
+                xctestrun: xctestrun,
+                destination: destinationSpec.rawValue,
+                derivedData: derivedData,
+                workingDirectory: workingDirectory
+            ), scratch: scratch)
+        } catch let error {
+            throw .bridge(error)
+        }
+        let enumerationData = Data(enumerationOutput.standardOutput.utf8)
+        let inventory: XcodeTestInventory
+        do {
+            inventory = try XcodeTestInventory.decode(enumerationData)
+        } catch let error {
+            throw .inventory(error)
+        }
+        guard inventory.testPlan == manifest.planName else {
+            throw .testPlanMismatch(inventory.testPlan)
+        }
         let test = testInvocation(
             xctestrun: xctestrun,
-            destination: destination,
+            destination: destinationSpec.rawValue,
             resultBundle: resultBundle,
             workingDirectory: workingDirectory
         )
@@ -197,12 +267,35 @@ public enum XcodeAppTestDriver {
         } catch let error {
             throw .summary(error)
         }
+        guard summary.configuration.configurationName == manifest.configurationName else {
+            throw .configurationMismatch(summary.configuration.configurationName)
+        }
+        do {
+            try destinationSpec.verify(device: summary.device)
+        } catch let error {
+            throw .destination(error)
+        }
         if summary.total.rawValue == summary.skipped.rawValue {
             throw .noExecutedTests
         }
         if (exitCode == 0 && summary.result == .failed)
             || (exitCode != 0 && summary.result != .failed) {
             throw .exitDisagreesWithSummary(exitCode)
+        }
+        let executedOutput: ProcessOutput
+        do {
+            executedOutput = try XcodeTestDriver.run(executedTestsInvocation(
+                resultBundle: resultBundle,
+                workingDirectory: workingDirectory
+            ), scratch: scratch)
+        } catch let error {
+            throw .bridge(error)
+        }
+        let executedData = Data(executedOutput.standardOutput.utf8)
+        do {
+            try inventory.verifyExecution(executedData, summary: summary)
+        } catch let error {
+            throw .inventory(error)
         }
         let coverageOutput: ProcessOutput
         do {
@@ -220,11 +313,30 @@ public enum XcodeAppTestDriver {
         } catch let error {
             throw .coverage(error)
         }
+        let expectedProductPath = derivedData + "/Build/Products/"
+            + verifiedPlan.buildConfiguration.rawValue + "/" + manifest.targetName
+            + ".xctest/Contents/MacOS/" + manifest.targetName
+        do {
+            try coverage.verifyEvidence(
+                expectedTargetName: manifest.targetName + ".xctest",
+                expectedProductPath: expectedProductPath,
+                expectedSourcePaths: Set(manifest.sourceFiles),
+                repositoryRoot: workingDirectory
+            )
+        } catch let error {
+            throw .coverage(error)
+        }
         let summaryDigest: Digest
         let coverageDigest: Digest
+        let enumerationDigest: Digest
+        let executedTestsDigest: Digest
+        let manifestDigest: Digest
         do {
             summaryDigest = try .sha256(summaryData)
             coverageDigest = try .sha256(coverageData)
+            enumerationDigest = try .sha256(enumerationData)
+            executedTestsDigest = try .sha256(executedData)
+            manifestDigest = try .sha256(manifestData)
         } catch let error {
             throw .digest(error)
         }
@@ -233,6 +345,9 @@ public enum XcodeAppTestDriver {
             coverage: coverage,
             summaryDigest: summaryDigest,
             coverageDigest: coverageDigest,
+            enumerationDigest: enumerationDigest,
+            executedTestsDigest: executedTestsDigest,
+            manifestDigest: manifestDigest,
             exitCode: exitCode
         )
     }
@@ -282,6 +397,58 @@ public enum XcodeAppTestDriver {
                 "-enableCodeCoverage", "YES",
                 "test-without-building",
             ],
+            workingDirectory: workingDirectory
+        )
+    }
+
+    static func enumerateInvocation(
+        xctestrun: String,
+        destination: String,
+        derivedData: String,
+        workingDirectory: String
+    ) -> XcodeInvocation {
+        XcodeInvocation(
+            executable: "/usr/bin/xcrun",
+            arguments: [
+                "xcodebuild",
+                "-quiet",
+                "-xctestrun", xctestrun,
+                "-destination", destination,
+                "-derivedDataPath", derivedData,
+                "-test-enumeration-style", "flat",
+                "-test-enumeration-format", "json",
+                "-test-enumeration-output-path", "-",
+                "test-without-building",
+                "-enumerate-tests",
+            ],
+            workingDirectory: workingDirectory
+        )
+    }
+
+    static func executedTestsInvocation(
+        resultBundle: String,
+        workingDirectory: String
+    ) -> XcodeInvocation {
+        XcodeInvocation(
+            executable: "/usr/bin/xcrun",
+            arguments: [
+                "xcresulttool",
+                "get", "test-results", "tests",
+                "--path", resultBundle,
+                "--schema-version", "0.4.0",
+                "--compact",
+            ],
+            workingDirectory: workingDirectory
+        )
+    }
+
+    static func manifestInvocation(
+        xctestrun: String,
+        workingDirectory: String
+    ) -> XcodeInvocation {
+        XcodeInvocation(
+            executable: "/usr/bin/plutil",
+            arguments: ["-convert", "json", "-o", "-", xctestrun],
             workingDirectory: workingDirectory
         )
     }

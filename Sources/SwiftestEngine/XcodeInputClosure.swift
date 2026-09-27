@@ -1,4 +1,5 @@
 import Foundation
+import SwiftestCodec
 import SwiftestPlatform
 
 public enum XcodeInputClosureError: Error, Equatable, Sendable {
@@ -14,6 +15,30 @@ public enum XcodeInputClosureError: Error, Equatable, Sendable {
     case invalidScheme
     case ambiguousScheme
     case unsupportedSchemeFeature(String)
+    case invalidTestPlan(String)
+    case testPlanCodec(StrictJSONError)
+    case sourceGraph(XcodeSourceGraphError)
+}
+
+public enum XcodeSourceGraphError: Error, Equatable, Sendable {
+    case missingReference(String)
+    case unexpectedObject(String)
+    case unsupportedFields(String)
+    case duplicateReference(String)
+    case missingSources(String)
+    case orphanObject(String)
+}
+
+struct XcodeVerifiedProject {
+    let path: String
+    let targetIdentifiers: Set<String>
+    let sourcePathsByTarget: [String: Set<String>]
+}
+
+private struct InspectedXcodeProject {
+    let objects: [String: OpenStepProjectValue]
+    let rootIdentifier: String
+    let targetIdentifiers: Set<String>
 }
 
 enum XcodeInputClosure {
@@ -21,12 +46,14 @@ enum XcodeInputClosure {
         container: XcodeContainer,
         repositoryRoot: String,
         scheme: String
-    ) throws(XcodeInputClosureError) {
-        let root = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.resolvingSymlinksInPath().path
-        guard !root.isEmpty else {
-            throw .externalContainer(repositoryRoot)
+    ) throws(XcodeInputClosureError) -> XcodeVerifiedPlan {
+        let root: String
+        do {
+            root = try CanonicalPathBoundary.directory(repositoryRoot)
+        } catch let error {
+            throw .platform(error)
         }
-        let projects: [String]
+        let projects: [XcodeVerifiedProject]
         switch container.kind {
         case .project:
             projects = [try verifyProject(path: container.path, root: root)]
@@ -50,14 +77,14 @@ enum XcodeInputClosure {
             }
             let references = try inspectWorkspace(data)
             let parent = URL(fileURLWithPath: workspace).deletingLastPathComponent().path
-            var verified: [String] = []
+            var verified: [XcodeVerifiedProject] = []
             for reference in references {
                 let project = parent + "/" + reference
                 verified.append(try verifyProject(path: project, root: root))
             }
             projects = verified
         }
-        try XcodeSchemeClosure.verify(
+        return try XcodeSchemeClosure.verify(
             scheme: scheme,
             container: container,
             projects: projects,
@@ -66,6 +93,15 @@ enum XcodeInputClosure {
     }
 
     static func inspectProject(_ data: Data) throws(XcodeInputClosureError) {
+        let inspected = try inspectProjectObjects(data)
+        guard !inspected.targetIdentifiers.isEmpty else {
+            throw .invalidProjectSyntax
+        }
+    }
+
+    private static func inspectProjectObjects(
+        _ data: Data
+    ) throws(XcodeInputClosureError) -> InspectedXcodeProject {
         var parser = OpenStepProjectParser(data: data)
         let root = try parser.parse().record()
         guard Set(root.keys) == ["archiveVersion", "classes", "objectVersion", "objects", "rootObject"],
@@ -81,6 +117,7 @@ enum XcodeInputClosure {
             throw .invalidProjectSyntax
         }
         var productIDs: Set<String> = []
+        var targetIDs: Set<String> = []
         for id in objects.keys.sorted() {
             guard let value = objects[id] else {
                 throw .invalidProjectSyntax
@@ -91,6 +128,7 @@ enum XcodeInputClosure {
                     throw .invalidProjectSyntax
                 }
                 productIDs.insert(product)
+                targetIDs.insert(id)
             }
         }
         for id in objects.keys.sorted() {
@@ -103,6 +141,11 @@ enum XcodeInputClosure {
             }
             try inspect(object: object, kind: kind, id: id, productIDs: productIDs)
         }
+        return InspectedXcodeProject(
+            objects: objects,
+            rootIdentifier: rootID,
+            targetIdentifiers: targetIDs
+        )
     }
 
     static func inspectWorkspace(_ data: Data) throws(XcodeInputClosureError) -> [String] {
@@ -139,7 +182,10 @@ enum XcodeInputClosure {
         return projects.sorted()
     }
 
-    private static func verifyProject(path: String, root: String) throws(XcodeInputClosureError) -> String {
+    static func verifyProject(
+        path: String,
+        root: String
+    ) throws(XcodeInputClosureError) -> XcodeVerifiedProject {
         let project = try contained(path: path, root: root)
         guard project.hasSuffix(".xcodeproj") else {
             throw .externalContainer(path)
@@ -159,12 +205,30 @@ enum XcodeInputClosure {
         } catch let error {
             throw .platform(error)
         }
-        try inspectProject(data)
-        return project
+        let inspected = try inspectProjectObjects(data)
+        guard !inspected.targetIdentifiers.isEmpty else {
+            throw .invalidProjectSyntax
+        }
+        var graph = XcodeSourceGraphVerifier(
+            projectDirectory: URL(fileURLWithPath: project).deletingLastPathComponent().path,
+            repositoryRoot: root,
+            inspected: inspected
+        )
+        let paths = try graph.verify()
+        return XcodeVerifiedProject(
+            path: project,
+            targetIdentifiers: inspected.targetIdentifiers,
+            sourcePathsByTarget: paths
+        )
     }
 
     static func contained(path: String, root: String) throws(XcodeInputClosureError) -> String {
-        let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        let resolved: String
+        do {
+            resolved = try CanonicalPathBoundary.existing(path)
+        } catch {
+            throw .externalContainer(path)
+        }
         let prefix = root.hasSuffix("/") ? root : root + "/"
         guard resolved.hasPrefix(prefix) else {
             throw .externalContainer(path)
@@ -399,6 +463,404 @@ enum XcodeInputClosure {
         "SWIFT_VERSION", "TARGETED_DEVICE_FAMILY", "TVOS_DEPLOYMENT_TARGET",
         "VALIDATE_PRODUCT", "WATCHOS_DEPLOYMENT_TARGET", "XROS_DEPLOYMENT_TARGET",
     ]
+}
+
+private struct XcodeSourceGraphVerifier {
+    let projectDirectory: String
+    let repositoryRoot: String
+    let inspected: InspectedXcodeProject
+    private var visited: Set<String> = []
+    private var productIdentifiers: Set<String> = []
+    private var fileTrees: [String: String] = [:]
+    private var localFiles: [String: String] = [:]
+
+    mutating func verify() throws(XcodeInputClosureError) -> [String: Set<String>] {
+        for target in inspected.targetIdentifiers.sorted() {
+            let value = try object(target, kind: "PBXNativeTarget")
+            let product = try requiredString(value, key: "productReference", id: target)
+            guard productIdentifiers.insert(product).inserted else {
+                throw .sourceGraph(.duplicateReference(product))
+            }
+        }
+        let project = try object(inspected.rootIdentifier, kind: "PBXProject")
+        try visit(inspected.rootIdentifier)
+        try fields(
+            project,
+            required: ["isa", "buildConfigurationList", "mainGroup", "productRefGroup", "projectDirPath", "projectRoot", "targets"],
+            optional: ["attributes", "compatibilityVersion", "developmentRegion", "hasScannedForEncodings", "knownRegions"],
+            id: inspected.rootIdentifier
+        )
+        if let attributes = project["attributes"] {
+            let values = try attributes.record()
+            guard Set(values.keys).isSubset(of: ["LastUpgradeCheck"]) else {
+                throw .sourceGraph(.unsupportedFields(inspected.rootIdentifier + ":attributes"))
+            }
+            for value in values.values {
+                let text = try value.string()
+                guard !text.isEmpty, text.allSatisfy(\.isNumber) else {
+                    throw .sourceGraph(.unexpectedObject(inspected.rootIdentifier + ":attributes"))
+                }
+            }
+        }
+        for key in ["compatibilityVersion", "developmentRegion", "hasScannedForEncodings"] {
+            if let value = project[key] {
+                let text = try value.string()
+                guard !text.isEmpty else {
+                    throw .sourceGraph(.unexpectedObject(inspected.rootIdentifier + ":" + key))
+                }
+            }
+        }
+        if let regions = project["knownRegions"] {
+            let names = try strings(regions, id: inspected.rootIdentifier + ":knownRegions")
+            guard Set(names).count == names.count else {
+                throw .sourceGraph(.duplicateReference(inspected.rootIdentifier + ":knownRegions"))
+            }
+        }
+        let rootGroup = try requiredString(project, key: "mainGroup", id: inspected.rootIdentifier)
+        let productGroup = try requiredString(project, key: "productRefGroup", id: inspected.rootIdentifier)
+        try visitGroup(rootGroup, parent: projectDirectory)
+        guard visited.contains(productGroup) else {
+            throw .sourceGraph(.missingReference(productGroup))
+        }
+        let projectTargets = try references(project, key: "targets", id: inspected.rootIdentifier)
+        guard !projectTargets.isEmpty, Set(projectTargets) == inspected.targetIdentifiers else {
+            throw .sourceGraph(.unexpectedObject(inspected.rootIdentifier + ":targets"))
+        }
+        try visitConfigurationList(try requiredString(project, key: "buildConfigurationList", id: inspected.rootIdentifier))
+        var sourcePathsByTarget: [String: Set<String>] = [:]
+        for target in projectTargets {
+            sourcePathsByTarget[target] = try visitTarget(target)
+        }
+        for identifier in inspected.objects.keys.sorted() where !visited.contains(identifier) {
+            throw .sourceGraph(.orphanObject(identifier))
+        }
+        return sourcePathsByTarget
+    }
+
+    private mutating func visitGroup(_ id: String, parent: String) throws(XcodeInputClosureError) {
+        let group = try object(id, kind: "PBXGroup")
+        try visit(id)
+        try fields(
+            group,
+            required: ["isa", "children", "sourceTree"],
+            optional: ["name", "path"],
+            id: id
+        )
+        let tree = try requiredString(group, key: "sourceTree", id: id)
+        let base: String
+        switch tree {
+        case "<group>":
+            base = parent
+        case "SOURCE_ROOT", "PROJECT_DIR":
+            base = projectDirectory
+        default:
+            throw .unsafeReference(tree)
+        }
+        let directory: String
+        if let value = group["path"] {
+            directory = try localPath(try value.string(), base: base, kind: .directory)
+        } else {
+            directory = base
+        }
+        if let value = group["name"] {
+            let name = try value.string()
+            guard !name.isEmpty else {
+                throw .sourceGraph(.unexpectedObject(id + ":name"))
+            }
+        }
+        for child in try references(group, key: "children", id: id) {
+            let value = try rawObject(child)
+            let kind = try requiredString(value, key: "isa", id: child)
+            switch kind {
+            case "PBXGroup":
+                try visitGroup(child, parent: directory)
+            case "PBXFileReference":
+                try visitFile(child, parent: directory)
+            default:
+                throw .sourceGraph(.unexpectedObject(child))
+            }
+        }
+    }
+
+    private mutating func visitFile(_ id: String, parent: String) throws(XcodeInputClosureError) {
+        let file = try object(id, kind: "PBXFileReference")
+        try visit(id)
+        try fields(
+            file,
+            required: ["isa", "path", "sourceTree"],
+            optional: ["explicitFileType", "includeInIndex", "lastKnownFileType", "name"],
+            id: id
+        )
+        let tree = try requiredString(file, key: "sourceTree", id: id)
+        let path = try requiredString(file, key: "path", id: id)
+        fileTrees[id] = tree
+        if let value = file["includeInIndex"] {
+            let index = try value.string()
+            guard index == "0" || index == "1" else {
+                throw .sourceGraph(.unexpectedObject(id + ":includeInIndex"))
+            }
+        }
+        if let value = file["name"] {
+            guard !(try value.string()).isEmpty else {
+                throw .sourceGraph(.unexpectedObject(id + ":name"))
+            }
+        }
+        switch tree {
+        case "BUILT_PRODUCTS_DIR":
+            guard productIdentifiers.contains(id) else {
+                throw .sourceGraph(.unexpectedObject(id + ":product"))
+            }
+        case "SDKROOT":
+            guard !productIdentifiers.contains(id) else {
+                throw .sourceGraph(.unexpectedObject(id + ":sdk-product"))
+            }
+        case "<group>", "SOURCE_ROOT", "PROJECT_DIR":
+            guard !productIdentifiers.contains(id) else {
+                throw .sourceGraph(.unexpectedObject(id + ":local-product"))
+            }
+            let base = tree == "<group>" ? parent : projectDirectory
+            let kind: FileEntryKind = path.hasSuffix(".xcassets") ? .directory : .file
+            localFiles[id] = try localPath(path, base: base, kind: kind)
+        default:
+            throw .unsafeReference(tree)
+        }
+    }
+
+    private mutating func visitTarget(_ id: String) throws(XcodeInputClosureError) -> Set<String> {
+        let target = try object(id, kind: "PBXNativeTarget")
+        try visit(id)
+        try fields(
+            target,
+            required: ["isa", "buildConfigurationList", "buildPhases", "name", "productName", "productReference", "productType"],
+            optional: ["buildRules", "dependencies", "packageProductDependencies"],
+            id: id
+        )
+        for key in ["buildRules", "dependencies", "packageProductDependencies"] where target[key] != nil {
+            guard try references(target, key: key, id: id).isEmpty else {
+                throw .sourceGraph(.unsupportedFields(id + ":" + key))
+            }
+        }
+        let product = try requiredString(target, key: "productReference", id: id)
+        guard fileTrees[product] == "BUILT_PRODUCTS_DIR" else {
+            throw .sourceGraph(.missingReference(product))
+        }
+        let productType = try requiredString(target, key: "productType", id: id)
+        guard [
+            "com.apple.product-type.application",
+            "com.apple.product-type.bundle.unit-test",
+            "com.apple.product-type.bundle.ui-testing",
+        ].contains(productType) else {
+            throw .sourceGraph(.unexpectedObject(id + ":productType"))
+        }
+        for key in ["name", "productName"] {
+            guard !(try requiredString(target, key: key, id: id)).isEmpty else {
+                throw .sourceGraph(.unexpectedObject(id + ":" + key))
+            }
+        }
+        try visitConfigurationList(try requiredString(target, key: "buildConfigurationList", id: id))
+        let phases = try references(target, key: "buildPhases", id: id)
+        guard !phases.isEmpty else {
+            throw .sourceGraph(.missingSources(id))
+        }
+        var sources: Set<String> = []
+        var sourcePhases = 0
+        for phase in phases {
+            let phaseObject = try rawObject(phase)
+            let kind = try requiredString(phaseObject, key: "isa", id: phase)
+            if kind == "PBXSourcesBuildPhase" {
+                sourcePhases += 1
+            }
+            try visitPhase(phase, kind: kind, sources: &sources)
+        }
+        guard sourcePhases == 1, !sources.isEmpty else {
+            throw .sourceGraph(.missingSources(id))
+        }
+        return sources
+    }
+
+    private mutating func visitPhase(
+        _ id: String,
+        kind: String,
+        sources: inout Set<String>
+    ) throws(XcodeInputClosureError) {
+        guard ["PBXSourcesBuildPhase", "PBXResourcesBuildPhase", "PBXFrameworksBuildPhase"].contains(kind) else {
+            throw .sourceGraph(.unexpectedObject(id + ":" + kind))
+        }
+        let phase = try object(id, kind: kind)
+        try visit(id)
+        try fields(
+            phase,
+            required: ["isa", "buildActionMask", "files", "runOnlyForDeploymentPostprocessing"],
+            optional: [],
+            id: id
+        )
+        guard try requiredString(phase, key: "buildActionMask", id: id) == "2147483647",
+            try requiredString(phase, key: "runOnlyForDeploymentPostprocessing", id: id) == "0" else {
+            throw .sourceGraph(.unexpectedObject(id + ":phase-settings"))
+        }
+        for buildFile in try references(phase, key: "files", id: id) {
+            let value = try object(buildFile, kind: "PBXBuildFile")
+            try visit(buildFile)
+            try fields(value, required: ["isa", "fileRef"], optional: [], id: buildFile)
+            let file = try requiredString(value, key: "fileRef", id: buildFile)
+            guard let tree = fileTrees[file] else {
+                throw .sourceGraph(.missingReference(file))
+            }
+            switch kind {
+            case "PBXSourcesBuildPhase":
+                guard let path = localFiles[file], path.hasSuffix(".swift"), sources.insert(path).inserted else {
+                    throw .sourceGraph(.unexpectedObject(buildFile + ":source"))
+                }
+            case "PBXResourcesBuildPhase":
+                guard localFiles[file] != nil, !fileHasSwiftPath(file) else {
+                    throw .sourceGraph(.unexpectedObject(buildFile + ":resource"))
+                }
+            case "PBXFrameworksBuildPhase":
+                guard tree == "SDKROOT" else {
+                    throw .sourceGraph(.unexpectedObject(buildFile + ":framework"))
+                }
+            default:
+                throw .sourceGraph(.unexpectedObject(id + ":phase"))
+            }
+        }
+    }
+
+    private mutating func visitConfigurationList(_ id: String) throws(XcodeInputClosureError) {
+        let list = try object(id, kind: "XCConfigurationList")
+        try visit(id)
+        try fields(
+            list,
+            required: ["isa", "buildConfigurations", "defaultConfigurationIsVisible", "defaultConfigurationName"],
+            optional: [],
+            id: id
+        )
+        guard try requiredString(list, key: "defaultConfigurationIsVisible", id: id) == "0" else {
+            throw .sourceGraph(.unexpectedObject(id + ":default-visible"))
+        }
+        let configurations = try references(list, key: "buildConfigurations", id: id)
+        guard !configurations.isEmpty else {
+            throw .sourceGraph(.unexpectedObject(id + ":configurations"))
+        }
+        var names: Set<String> = []
+        for configuration in configurations {
+            let value = try object(configuration, kind: "XCBuildConfiguration")
+            try visit(configuration)
+            try fields(value, required: ["isa", "buildSettings", "name"], optional: [], id: configuration)
+            let name = try requiredString(value, key: "name", id: configuration)
+            guard !name.isEmpty, names.insert(name).inserted else {
+                throw .sourceGraph(.duplicateReference(configuration + ":name"))
+            }
+        }
+        let selected = try requiredString(list, key: "defaultConfigurationName", id: id)
+        guard names.contains(selected) else {
+            throw .sourceGraph(.missingReference(id + ":default-configuration"))
+        }
+    }
+
+    private func fileHasSwiftPath(_ id: String) -> Bool {
+        localFiles[id]?.hasSuffix(".swift") == true
+    }
+
+    private func localPath(
+        _ path: String,
+        base: String,
+        kind: FileEntryKind
+    ) throws(XcodeInputClosureError) -> String {
+        try XcodeInputClosure.validateRelativeReference(path)
+        let candidate = base + "/" + path
+        let observed: FileEntryKind
+        do {
+            observed = try FileSystemBoundary.entryKind(path: candidate)
+        } catch {
+            throw .sourceGraph(.missingReference(candidate))
+        }
+        guard observed == kind else {
+            throw .unsafeReference(candidate)
+        }
+        let resolved = try XcodeInputClosure.contained(path: candidate, root: repositoryRoot)
+        guard resolved.hasPrefix(projectDirectory + "/") else {
+            throw .unsafeReference(candidate)
+        }
+        return resolved
+    }
+
+    private mutating func visit(_ id: String) throws(XcodeInputClosureError) {
+        guard visited.insert(id).inserted else {
+            throw .sourceGraph(.duplicateReference(id))
+        }
+    }
+
+    private func rawObject(_ id: String) throws(XcodeInputClosureError) -> [String: OpenStepProjectValue] {
+        guard let value = inspected.objects[id] else {
+            throw .sourceGraph(.missingReference(id))
+        }
+        return try value.record()
+    }
+
+    private func object(
+        _ id: String,
+        kind: String
+    ) throws(XcodeInputClosureError) -> [String: OpenStepProjectValue] {
+        let value = try rawObject(id)
+        guard try requiredString(value, key: "isa", id: id) == kind else {
+            throw .sourceGraph(.unexpectedObject(id))
+        }
+        return value
+    }
+
+    private func requiredString(
+        _ object: [String: OpenStepProjectValue],
+        key: String,
+        id: String
+    ) throws(XcodeInputClosureError) -> String {
+        guard let value = object[key] else {
+            throw .sourceGraph(.missingReference(id + ":" + key))
+        }
+        return try value.string()
+    }
+
+    private func references(
+        _ object: [String: OpenStepProjectValue],
+        key: String,
+        id: String
+    ) throws(XcodeInputClosureError) -> [String] {
+        guard let value = object[key] else {
+            throw .sourceGraph(.missingReference(id + ":" + key))
+        }
+        let entries = try strings(value, id: id + ":" + key)
+        guard Set(entries).count == entries.count else {
+            throw .sourceGraph(.duplicateReference(id + ":" + key))
+        }
+        return entries
+    }
+
+    private func strings(
+        _ value: OpenStepProjectValue,
+        id: String
+    ) throws(XcodeInputClosureError) -> [String] {
+        let entries = try value.list()
+        var names: [String] = []
+        for entry in entries {
+            let name = try entry.string()
+            guard !name.isEmpty else {
+                throw .sourceGraph(.unexpectedObject(id))
+            }
+            names.append(name)
+        }
+        return names
+    }
+
+    private func fields(
+        _ object: [String: OpenStepProjectValue],
+        required: Set<String>,
+        optional: Set<String>,
+        id: String
+    ) throws(XcodeInputClosureError) {
+        let actual = Set(object.keys)
+        guard required.isSubset(of: actual), actual.isSubset(of: required.union(optional)) else {
+            throw .sourceGraph(.unsupportedFields(id))
+        }
+    }
 }
 
 private indirect enum OpenStepProjectValue {

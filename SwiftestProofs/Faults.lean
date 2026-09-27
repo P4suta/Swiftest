@@ -139,26 +139,20 @@ theorem digestOnlyIrrelevanceRejected :
 inductive FaultEvidenceState where
   | verified
   | structural
+  | scoped
   | unverified
 deriving DecidableEq, Repr
 
 def reportVerdict (base : Verdict) (faults : FaultEvidenceState) : Verdict :=
   match faults, base with
   | .verified, base => base
-  | .structural, .assured => .gaps
-  | .structural, .changeAssured => .gaps
-  | .structural, .scopeAssured => .gaps
-  | .structural, .gaps => .gaps
-  | .structural, .unsettled => .gapsAndUnsettled
-  | .structural, .gapsAndUnsettled => .gapsAndUnsettled
-  | .structural, .invalid => .invalid
-  | .unverified, .assured => .gaps
-  | .unverified, .changeAssured => .gaps
-  | .unverified, .scopeAssured => .gaps
-  | .unverified, .gaps => .gaps
-  | .unverified, .unsettled => .gapsAndUnsettled
-  | .unverified, .gapsAndUnsettled => .gapsAndUnsettled
-  | .unverified, .invalid => .invalid
+  | _, .assured => .gaps
+  | _, .changeAssured => .gaps
+  | _, .scopeAssured => .gaps
+  | _, .gaps => .gaps
+  | _, .unsettled => .gapsAndUnsettled
+  | _, .gapsAndUnsettled => .gapsAndUnsettled
+  | _, .invalid => .invalid
 
 theorem unverifiedCompleteCannotBeAssured :
     reportVerdict .assured .unverified = .gaps := by
@@ -199,6 +193,10 @@ theorem noUnverifiedFaultCampaignCanBeAssured (base : Verdict) :
 
 theorem noStructuralFaultCampaignCanBeAssured (base : Verdict) :
     isAssuredVerdict (reportVerdict base .structural) = false := by
+  cases base <;> rfl
+
+theorem noPartialFaultCampaignCanBeAssured (base : Verdict) :
+    isAssuredVerdict (reportVerdict base .scoped) = false := by
   cases base <;> rfl
 
 inductive ExecutedFaultResult where

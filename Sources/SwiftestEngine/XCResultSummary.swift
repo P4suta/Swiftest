@@ -4,12 +4,15 @@ import SwiftestModel
 
 public enum XCResultSummaryError: Error, Equatable, Sendable {
     case codec(StrictJSONError)
+    case identity(XcodeRunIdentityError)
+    case invalidFailureIdentifier(String)
     case invalidStatus(String)
     case negativeCount(String)
     case countOverflow
     case inconsistentTotals
     case inconsistentStatus
     case invalidTimestamp(String)
+    case ambiguousDeviceConfigurations(Int)
     case count(NumericValueError)
 }
 
@@ -21,6 +24,16 @@ public enum XCResultStatus: String, CaseIterable, Sendable {
     case unknown
 }
 
+public struct XcodeFailureEvidence: Equatable, Sendable {
+    public let identifier: XcodeTestIdentifier
+    public let message: String
+
+    init(identifier: XcodeTestIdentifier, message: String) {
+        self.identifier = identifier
+        self.message = message
+    }
+}
+
 public struct XCResultSummary: Equatable, Sendable {
     public let result: XCResultStatus
     public let total: EvidenceCount
@@ -30,6 +43,9 @@ public struct XCResultSummary: Equatable, Sendable {
     public let expectedFailures: EvidenceCount
     public let failureRecords: EvidenceCount
     public let runtimeWarnings: EvidenceCount
+    public let device: XcodeDeviceIdentity
+    public let configuration: XcodeConfigurationIdentity
+    public let failures: [XcodeFailureEvidence]
 
     public init(
         result: XCResultStatus,
@@ -39,7 +55,10 @@ public struct XCResultSummary: Equatable, Sendable {
         skipped: EvidenceCount,
         expectedFailures: EvidenceCount,
         failureRecords: EvidenceCount,
-        runtimeWarnings: EvidenceCount
+        runtimeWarnings: EvidenceCount,
+        device: XcodeDeviceIdentity,
+        configuration: XcodeConfigurationIdentity,
+        failures: [XcodeFailureEvidence]
     ) {
         self.result = result
         self.total = total
@@ -49,6 +68,9 @@ public struct XCResultSummary: Equatable, Sendable {
         self.expectedFailures = expectedFailures
         self.failureRecords = failureRecords
         self.runtimeWarnings = runtimeWarnings
+        self.device = device
+        self.configuration = configuration
+        self.failures = failures
     }
 
     public static func decode(_ data: Data) throws(XCResultSummaryError) -> XCResultSummary {
@@ -73,7 +95,7 @@ public struct XCResultSummary: Equatable, Sendable {
         let expected = try count(&reader, "expectedFailures")
         let insights = try array(&reader, "topInsights")
         let statistics = try array(&reader, "statistics")
-        let devices = try value(&reader, "devicesAndConfigurations")
+        let deviceConfigurations = try array(&reader, "devicesAndConfigurations")
         let failures = try array(&reader, "testFailures")
         let warnings = try array(&reader, "runtimeWarnings")
         for insight in insights {
@@ -82,14 +104,15 @@ public struct XCResultSummary: Equatable, Sendable {
         for statistic in statistics {
             try validateStatistic(statistic)
         }
-        let deviceCounts = try validateDeviceConfiguration(devices)
+        guard deviceConfigurations.count == 1 else {
+            throw .ambiguousDeviceConfigurations(deviceConfigurations.count)
+        }
+        let deviceCounts = try validateDeviceConfiguration(deviceConfigurations[0])
         if deviceCounts.passed != passed || deviceCounts.failed != failed
             || deviceCounts.skipped != skipped || deviceCounts.expectedFailures != expected {
             throw .inconsistentTotals
         }
-        for failure in failures {
-            try validateFailure(failure)
-        }
+        let decodedFailures = try failures.map(validateFailure)
         for warning in warnings {
             try validateWarning(warning)
         }
@@ -154,7 +177,10 @@ public struct XCResultSummary: Equatable, Sendable {
             skipped: skipped,
             expectedFailures: expected,
             failureRecords: failureRecords,
-            runtimeWarnings: runtimeWarnings
+            runtimeWarnings: runtimeWarnings,
+            device: deviceCounts.device,
+            configuration: deviceCounts.configuration,
+            failures: decodedFailures
         )
     }
 
@@ -174,6 +200,8 @@ public struct XCResultSummary: Equatable, Sendable {
     }
 
     private struct DeviceCounts {
+        let device: XcodeDeviceIdentity
+        let configuration: XcodeConfigurationIdentity
         let passed: EvidenceCount
         let failed: EvidenceCount
         let skipped: EvidenceCount
@@ -184,14 +212,24 @@ public struct XCResultSummary: Equatable, Sendable {
         _ input: JSONValue
     ) throws(XCResultSummaryError) -> DeviceCounts {
         var reader = try codecObject(input)
-        try validateDevice(try value(&reader, "device"))
-        try validateConfiguration(try value(&reader, "testPlanConfiguration"))
+        let device: XcodeDeviceIdentity
+        let configuration: XcodeConfigurationIdentity
+        let deviceValue = try value(&reader, "device")
+        let configurationValue = try value(&reader, "testPlanConfiguration")
+        do {
+            device = try .decode(deviceValue)
+            configuration = try .decode(configurationValue)
+        } catch let error {
+            throw .identity(error)
+        }
         let passed = try count(&reader, "passedTests")
         let failed = try count(&reader, "failedTests")
         let skipped = try count(&reader, "skippedTests")
         let expected = try count(&reader, "expectedFailures")
         try finish(reader)
         return DeviceCounts(
+            device: device,
+            configuration: configuration,
             passed: passed,
             failed: failed,
             skipped: skipped,
@@ -199,31 +237,13 @@ public struct XCResultSummary: Equatable, Sendable {
         )
     }
 
-    private static func validateDevice(_ input: JSONValue) throws(XCResultSummaryError) {
+    private static func validateFailure(_ input: JSONValue) throws(XCResultSummaryError) -> XcodeFailureEvidence {
         let fields = try object(input)
         var reader = try codecObject(input)
-        for key in ["deviceId", "deviceName", "architecture", "modelName", "platform", "osVersion"] {
-            try expectString(&reader, key)
-        }
-        if fields["osBuildNumber"] != nil {
-            try expectString(&reader, "osBuildNumber")
-        }
-        try finish(reader)
-    }
-
-    private static func validateConfiguration(_ input: JSONValue) throws(XCResultSummaryError) {
-        var reader = try codecObject(input)
-        try expectString(&reader, "configurationId")
-        try expectString(&reader, "configurationName")
-        try finish(reader)
-    }
-
-    private static func validateFailure(_ input: JSONValue) throws(XCResultSummaryError) {
-        let fields = try object(input)
-        var reader = try codecObject(input)
-        for key in ["testName", "targetName", "failureText", "testIdentifierString"] {
-            try expectString(&reader, key)
-        }
+        try expectString(&reader, "testName")
+        let targetName = try string(&reader, "targetName")
+        let failureText = try string(&reader, "failureText")
+        let identifierText = try string(&reader, "testIdentifierString")
         let identifier = try value(&reader, "testIdentifier")
         guard case .number(let digits) = identifier, Int(digits) != nil else {
             throw .codec(.expectedInteger("testIdentifier"))
@@ -232,6 +252,15 @@ public struct XCResultSummary: Equatable, Sendable {
             try expectString(&reader, "testIdentifierURL")
         }
         try finish(reader)
+        guard !failureText.isEmpty else {
+            throw .invalidFailureIdentifier(identifierText)
+        }
+        do {
+            let identifier = try XcodeTestIdentifier.decode(targetName + "/" + identifierText)
+            return XcodeFailureEvidence(identifier: identifier, message: failureText)
+        } catch {
+            throw .invalidFailureIdentifier(identifierText)
+        }
     }
 
     private static func validateWarning(_ input: JSONValue) throws(XCResultSummaryError) {

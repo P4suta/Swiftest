@@ -9,6 +9,8 @@ public enum LeanTrustError: Error, Equatable, Sendable {
     case unterminatedString(String)
     case unterminatedComment(String)
     case unterminatedQuotedIdentifier(String)
+    case quotedIdentifier(SourceLocation)
+    case unsupportedRawString(SourceLocation)
     case proofHole(SourceLocation, String)
     case lakeConfiguration(String)
     case lakeManifestCodec(StrictJSONError)
@@ -16,6 +18,13 @@ public enum LeanTrustError: Error, Equatable, Sendable {
 }
 
 public enum LeanTrust {
+    private static let forbiddenProofTokens: Set<String> = [
+        "admit", "axiom", "bv_decide", "constant", "elab", "elab_rules",
+        "implemented_by", "macro", "native", "native_decide", "ofReduceBool", "ofReduceNat",
+        "opaque", "partial", "partial_fixpoint", "reduceBool", "reduceNat", "run_tac",
+        "sorry", "sorryAx", "syntax", "trustCompiler", "unsafe",
+    ]
+
     private static let lakeConfiguration = "name = \"swiftest\"\n"
         + "version = \"0.1.0\"\n"
         + "defaultTargets = [\"SwiftestProofs\", \"swiftest-proof-oracle\"]\n"
@@ -26,12 +35,15 @@ public enum LeanTrust {
         + "[[lean_exe]]\n"
         + "name = \"swiftest-proof-oracle\"\n"
         + "root = \"SwiftestProofs.Oracle\"\n"
-    private static let leanToolchain = "leanprover/lean4:v4.34.1\n"
+    private static let leanToolchain = PinnedLeanToolchain.marker + "\n"
 
     public static func audit(root: String) throws(LeanTrustError) {
         try auditConfiguration(root: root)
         try inspectFile(root: root, relative: "SwiftestProofs.lean")
-        try inspectDirectory(root: root, relative: "SwiftestProofs")
+        let inventory = try LeanProofInputInventory.collect(root: root)
+        for relative in inventory.files {
+            try inspectFile(root: root, relative: relative)
+        }
     }
 
     static func auditManifest(root: String) throws(LeanTrustError) {
@@ -119,6 +131,7 @@ public enum LeanTrust {
                 continue
             }
             if byte == 0xC2 && next == 0xAB {
+                let start = index
                 index += 2
                 var closed = false
                 while index + 1 < bytes.count {
@@ -132,7 +145,10 @@ public enum LeanTrust {
                 if !closed {
                     throw .unterminatedQuotedIdentifier(path)
                 }
-                continue
+                throw .quotedIdentifier(location(path: path, bytes: bytes, offset: start))
+            }
+            if LeanRawStringStart.matches(bytes, at: index) {
+                throw .unsupportedRawString(location(path: path, bytes: bytes, offset: index))
             }
             if identifierByte(byte) {
                 let start = index
@@ -140,51 +156,12 @@ public enum LeanTrust {
                     index += 1
                 }
                 let token = String(decoding: bytes[start..<index], as: UTF8.self)
-                if token == "sorry" || token == "admit" || token == "axiom" || token == "sorryAx" {
+                if forbiddenProofTokens.contains(token) {
                     throw .proofHole(location(path: path, bytes: bytes, offset: start), token)
                 }
                 continue
             }
             index += 1
-        }
-    }
-
-    private static func inspectDirectory(root: String, relative: String) throws(LeanTrustError) {
-        let path = root + "/" + relative
-        let kind: FileEntryKind
-        do {
-            kind = try FileSystemBoundary.entryKind(path: path)
-        } catch let error {
-            throw .platform(error)
-        }
-        guard kind == .directory else {
-            throw .unexpectedEntry(relative)
-        }
-        let entries: [String]
-        do {
-            entries = try FileSystemBoundary.list(path: path)
-        } catch let error {
-            throw .platform(error)
-        }
-        for entry in entries {
-            let child = relative + "/" + entry
-            let childKind: FileEntryKind
-            do {
-                childKind = try FileSystemBoundary.entryKind(path: root + "/" + child)
-            } catch let error {
-                throw .platform(error)
-            }
-            switch childKind {
-            case .file:
-                guard child.hasSuffix(".lean") else {
-                    throw .unexpectedEntry(child)
-                }
-                try inspectFile(root: root, relative: child)
-            case .directory:
-                try inspectDirectory(root: root, relative: child)
-            case .symbolicLink, .other:
-                throw .unexpectedEntry(child)
-            }
         }
     }
 
