@@ -7,12 +7,13 @@ then
     if test "$#" -ne 2 || test "$1" != --only \
         || { test "$2" != world_plan_handoff && test "$2" != world_cursor_oracle \
             && test "$2" != world_definition_preimage \
+            && test "$2" != manifest_bootstrap \
             && test "$2" != attachment_discard && test "$2" != swift_package_denial \
             && test "$2" != swift_package_receipt_forgery \
             && test "$2" != fault_provenance_scanner \
             && test "$2" != swift_testing_locus; }
     then
-        echo "usage: Scripts/mutate-laws [--only world_plan_handoff|world_cursor_oracle|world_definition_preimage|attachment_discard|swift_package_denial|swift_package_receipt_forgery|fault_provenance_scanner|swift_testing_locus]" >&2
+        echo "usage: Scripts/mutate-laws [--only world_plan_handoff|world_cursor_oracle|world_definition_preimage|manifest_bootstrap|attachment_discard|swift_package_denial|swift_package_receipt_forgery|fault_provenance_scanner|swift_testing_locus]" >&2
         exit 2
     fi
     mutation_selection=$2
@@ -39,6 +40,7 @@ mkdir -p "$copy_root"
 scanner="$copy_root/Sources/SwiftestLaws/LawScanner.swift"
 manifest_graph="$copy_root/Sources/SwiftestLaws/PackageManifestGraph.swift"
 lean_trust="$copy_root/Sources/SwiftestLaws/LeanTrust.swift"
+lean_snapshot="$copy_root/Sources/SwiftestLaws/LeanProofSnapshot.swift"
 other_source_lexer="$copy_root/Sources/SwiftestLaws/OtherSourceLexer.swift"
 vnode_adapter="$copy_root/Sources/SwiftestPlatform/ABIAdapter.swift"
 catalog_serializer="$copy_root/Sources/SwiftestReport/AssuredReport.swift"
@@ -52,6 +54,7 @@ command_source="$copy_root/Sources/SwiftestCLI/SwiftestCommand.swift"
 scanner_original="$scratch_root/LawScanner.swift"
 manifest_graph_original="$scratch_root/PackageManifestGraph.swift"
 lean_trust_original="$scratch_root/LeanTrust.swift"
+lean_snapshot_original="$scratch_root/LeanProofSnapshot.swift"
 other_source_lexer_original="$scratch_root/OtherSourceLexer.swift"
 vnode_adapter_original="$scratch_root/ABIAdapter.swift"
 catalog_serializer_original="$scratch_root/AssuredReport.swift"
@@ -67,6 +70,7 @@ score_source_original="$scratch_root/AssuranceScore.swift"
 cp "$scanner" "$scanner_original"
 cp "$manifest_graph" "$manifest_graph_original"
 cp "$lean_trust" "$lean_trust_original"
+cp "$lean_snapshot" "$lean_snapshot_original"
 cp "$other_source_lexer" "$other_source_lexer_original"
 cp "$vnode_adapter" "$vnode_adapter_original"
 cp "$catalog_serializer" "$catalog_serializer_original"
@@ -129,6 +133,17 @@ mutate_world_definition_preimage() {
     require_semantic_mutant_killed worldCursorOracleCoversEveryHeterogeneousCoordinate \
         "$scratch_root/world-definition-preimage.log" world-definition-preimage
     cp "$world_space_original" "$world_space"
+}
+mutate_manifest_bootstrap() {
+    perl -0pi -e 's/bytes\["lake-manifest\.json"\] = manifest/bytes["lake-manifest.json"] = nil/' "$lean_snapshot"
+    if cmp -s "$lean_snapshot" "$lean_snapshot_original"
+    then
+        echo "Lean manifest bootstrap mutation was not applied"
+        exit 1
+    fi
+    require_semantic_mutant_killed proofSnapshotBootstrapsMissingManifestWithoutWritingSource \
+        "$scratch_root/manifest-bootstrap.log" manifest-bootstrap
+    cp "$lean_snapshot_original" "$lean_snapshot"
 }
 mutate_attachment_discard() {
     perl -0pi -e 's/attachments: attachments, bytes: data/attachments: attachments.filter { _ in false }, bytes: data/' "$testing_stream"
@@ -432,6 +447,12 @@ then
     echo "law-mutation-targeted=passed mutation=world_definition_preimage"
     exit 0
 fi
+if test "$mutation_selection" = manifest_bootstrap
+then
+    mutate_manifest_bootstrap
+    echo "law-mutation-targeted=passed mutation=manifest_bootstrap"
+    exit 0
+fi
 if test "$mutation_selection" = attachment_discard
 then
     mutate_attachment_discard
@@ -520,6 +541,8 @@ mutate_world_cursor_oracle
 echo "world-cursor-oracle-mutation=passed"
 mutate_world_definition_preimage
 echo "world-definition-preimage-mutation=passed"
+mutate_manifest_bootstrap
+echo "manifest-bootstrap-mutation=passed"
 mutate_attachment_discard
 echo "attachment-discard-mutation=passed"
 mutate_swift_testing_locus
