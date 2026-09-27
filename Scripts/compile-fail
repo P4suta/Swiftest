@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
+LC_ALL=C
+export LC_ALL
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-compile-fail.XXXXXX")
 trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
@@ -7,9 +9,21 @@ module_cache="$scratch_root/module-cache"
 mkdir -p "$module_cache"
 export CLANG_MODULE_CACHE_PATH="$module_cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
-for fixture in InvalidTransition MissingBuildReceipt ForgedBuildReceipt ForgedBaselineReceipt ForgedExecutionReceipt ForgedReceiptFactory IDMixing ClaimPolarity DeclaredClaimsWrongPolarity DeclaredClaimsRawID FrozenPlanRawWorldID CapabilityCopy ClosedDomainAssociatedValue ClosedDomainConditionalCase ClosedDomainHandwrittenMember ClosedDomainEmpty ClosedDomainGeneric ClosedDomainAttributedCase ClosedDomainWrongDecl PropertyMissingTest PropertyNonemptyBody PropertyInvalidIterationType PerformanceClaimUnsupported TestDoubleUnsupported NonInterferenceProofForgery
+fixture_count=0
+for fixture_path in "$project_root"/Fixtures/CompileFail/*
 do
-    fixture_path="$project_root/Fixtures/CompileFail/$fixture"
+    if [ ! -d "$fixture_path" ] || [ -L "$fixture_path" ]
+    then
+        echo "$fixture_path is not a fixture directory"
+        exit 1
+    fi
+    if [ ! -f "$fixture_path/Package.swift" ] || [ -L "$fixture_path/Package.swift" ]
+    then
+        echo "$fixture_path has no regular Package.swift"
+        exit 1
+    fi
+    fixture=$(basename "$fixture_path")
+    fixture_count=$((fixture_count + 1))
     log_path="$scratch_root/$fixture.log"
     if swift build --disable-sandbox --package-path "$fixture_path" --scratch-path "$scratch_root/build" >"$log_path" 2>&1
     then
@@ -47,6 +61,8 @@ do
         PerformanceClaimUnsupported) expected="PerformanceClaim is not assured in this version" ;;
         TestDoubleUnsupported) expected="TestDouble is not assured in this version" ;;
         NonInterferenceProofForgery) expected="has no member 'verified'" ;;
+        PlannedClaimCasePolarity) expected="cannot convert value of type 'PlannedClaimCaseID<Detection>' to expected argument type 'PlannedClaimCaseID<Preservation>'" ;;
+        *) echo "$fixture has no expected compile-fail diagnostic"; exit 1 ;;
     esac
     if ! grep -Fq "$expected" "$log_path"
     then
@@ -54,4 +70,4 @@ do
         exit 1
     fi
 done
-echo "compile-fail=passed fixtures=25"
+echo "compile-fail=passed fixtures=$fixture_count"

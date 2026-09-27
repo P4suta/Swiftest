@@ -111,29 +111,30 @@ public struct ExecutionReceipt: Equatable, Sendable {
         guard declaredMutants.count == plan.mutants.count else {
             throw .planMismatch(.mutants)
         }
-        var observedWorlds = Set<WorldID>()
-        var observedMutants = Set<WorldPoint<MutantID>>()
+        let required = PlannedWorldCaseID.required(worlds: plan.worlds, mutants: plan.mutants)
+        let requiredCases = Set(required)
+        var observed = Set<PlannedWorldCaseID>()
         for result in results {
+            let planned: PlannedWorldCaseID
+            let mismatch: PlanMismatch
             switch result {
             case .world(let world):
-                guard declaredWorlds.contains(world), observedWorlds.insert(world).inserted else {
-                    throw .planMismatch(.worlds)
-                }
+                planned = .planned(world: world, mutant: .clean)
+                mismatch = .worlds
             case .mutant(let mutant, let world):
-                guard declaredMutants.contains(mutant), declaredWorlds.contains(world),
-                    observedMutants.insert(WorldPoint(member: mutant, world: world)).inserted else {
-                    throw .planMismatch(.mutants)
-                }
+                planned = .planned(world: world, mutant: .mutant(mutant))
+                mismatch = .mutants
+            }
+            guard requiredCases.contains(planned), observed.insert(planned).inserted else {
+                throw .planMismatch(mismatch)
             }
         }
-        guard observedWorlds == declaredWorlds else {
-            throw .planMismatch(.worlds)
-        }
-        for mutant in plan.mutants {
-            for world in plan.worlds {
-                guard observedMutants.contains(WorldPoint(member: mutant, world: world)) else {
-                    throw .planMismatch(.mutants)
-                }
+        for planned in required where !observed.contains(planned) {
+            switch planned.mutant {
+            case .clean:
+                throw .planMismatch(.worlds)
+            case .mutant:
+                throw .planMismatch(.mutants)
             }
         }
         return ExecutionReceipt(

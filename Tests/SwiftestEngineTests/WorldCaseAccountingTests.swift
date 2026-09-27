@@ -17,7 +17,7 @@ import Testing
     let fixture = try worldCaseFixture()
     let first = try #require(fixture.worlds.first)
 
-    #expect(throws: WorldCaseAccountingError.missing(WorldCaseKey.planned(fixture.worlds[1]))) {
+    #expect(throws: WorldCaseAccountingError.missing(PlannedWorldCaseID.planned(fixture.worlds[1]))) {
         try fixture.plan.account(individuals: [fixture.individual(first)])
     }
 }
@@ -26,7 +26,7 @@ import Testing
     let fixture = try worldCaseFixture()
     let first = try #require(fixture.worlds.first)
 
-    #expect(throws: WorldCaseAccountingError.duplicate(WorldCaseKey.planned(first))) {
+    #expect(throws: WorldCaseAccountingError.duplicate(PlannedWorldCaseID.planned(first))) {
         try fixture.plan.account(individuals: [
             fixture.individual(first),
             fixture.individual(first),
@@ -58,7 +58,7 @@ import Testing
         mutant: first.mutant
     )
 
-    #expect(throws: WorldCaseAccountingError.mismatchedWorld(WorldCaseKey.planned(first))) {
+    #expect(throws: WorldCaseAccountingError.mismatchedWorld(PlannedWorldCaseID.planned(first))) {
         try fixture.plan.account(individuals: [fixture.individual(inconsistent)])
     }
 }
@@ -69,7 +69,7 @@ import Testing
     let first = try #require(fixture.worlds.first)
     let otherClaim = try Claim<Preservation>.preservation(id: ClaimID.parse("other-claim"), name: "Other claim")
 
-    #expect(throws: WorldCaseAccountingError.unexpected(WorldCaseKey.planned(unexpected))) {
+    #expect(throws: WorldCaseAccountingError.unexpected(PlannedWorldCaseID.planned(unexpected))) {
         try fixture.plan.account(individuals: [fixture.individual(unexpected)])
     }
     #expect(throws: WorldCaseAccountingError.mismatchedClaim(otherClaim.id)) {
@@ -88,9 +88,31 @@ import Testing
     let test = try SwiftTestingTestID.parse("WorldCaseTests/verify()")
     let claim = try Claim<Preservation>.preservation(id: ClaimID.parse("world-case-claim"), name: "World case claim")
 
-    #expect(throws: WorldCaseAccountingError.duplicatePlan(WorldCaseKey.planned(first))) {
+    #expect(throws: WorldCaseAccountingError.duplicatePlan(PlannedWorldCaseID.planned(first))) {
         try WorldCasePlan(worlds: sequence, test: test, claim: claim)
     }
+}
+
+@Test func cleanObservationCannotStandInForMutantWithTheSameWorldID() throws {
+    let mutant = try MutantID.parse("world-case-mutant")
+    let fixture = try worldCaseFixture(
+        locales: [.japaneseJapan],
+        mutants: [.clean, .mutant(mutant)]
+    )
+    let clean = fixture.worlds[0]
+    let changed = fixture.worlds[1]
+    #expect(clean.id == changed.id)
+    #expect(PlannedWorldCaseID.planned(clean) != PlannedWorldCaseID.planned(changed))
+    #expect(fixture.plan.count == 2)
+
+    #expect(throws: WorldCaseAccountingError.missing(PlannedWorldCaseID.planned(changed))) {
+        try fixture.plan.account(individuals: [fixture.individual(clean)])
+    }
+    #expect(throws: WorldCaseAccountingError.duplicate(PlannedWorldCaseID.planned(clean))) {
+        try fixture.plan.account(individuals: [fixture.individual(clean), fixture.individual(clean)])
+    }
+    let matched = try fixture.plan.account(individuals: [fixture.individual(changed), fixture.individual(clean)])
+    #expect(matched.individuals.map(\.world.mutant) == [.clean, .mutant(mutant)])
 }
 
 @Test func worldCaseAccountingCanOnlyEstablishStructuralCompleteness() throws {
@@ -119,7 +141,7 @@ import Testing
             status: .passed
         )])
     }
-    #expect(throws: WorldCaseAccountingError.unsupportedIrrelevance(WorldCaseKey.planned(first))) {
+    #expect(throws: WorldCaseAccountingError.unsupportedIrrelevance(PlannedWorldCaseID.planned(first))) {
         try fixture.plan.account(individuals: [UnverifiedIndividualWorldCase(
             world: first,
             test: fixture.test,
@@ -141,11 +163,12 @@ private struct WorldCaseFixture {
 }
 
 private func worldCaseFixture(
-    locales: [LocaleScenario] = [.englishUnitedStates, .japaneseJapan]
+    locales: [LocaleScenario] = [.englishUnitedStates, .japaneseJapan],
+    mutants: [MutantSelection] = [.clean]
 ) throws -> WorldCaseFixture {
     let test = try SwiftTestingTestID.parse("WorldCaseTests/verify()")
     let claim = try Claim<Preservation>.preservation(id: ClaimID.parse("world-case-claim"), name: "World case claim")
-    let sequence = try worldCaseSpace(locales: locales).allWorlds()
+    let sequence = try worldCaseSpace(locales: locales, mutants: mutants).allWorlds()
     return try WorldCaseFixture(
         worlds: Array(sequence),
         plan: WorldCasePlan(worlds: sequence, test: test, claim: claim),

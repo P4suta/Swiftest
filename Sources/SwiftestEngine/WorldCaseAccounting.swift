@@ -1,30 +1,16 @@
 import SwiftestModel
 
-public struct WorldCaseKey: Hashable, Sendable {
-    public let world: WorldID
-    public let mutant: MutantSelection
-
-    private init(world: WorldID, mutant: MutantSelection) {
-        self.world = world
-        self.mutant = mutant
-    }
-
-    public static func planned(_ world: World) -> WorldCaseKey {
-        WorldCaseKey(world: world.id, mutant: world.mutant)
-    }
-}
-
 public enum WorldCaseAccountingError: Error, Equatable, Sendable {
     case count(NumericValueError)
     case planCardinality(expected: EvidenceCount, actual: EvidenceCount)
-    case duplicatePlan(WorldCaseKey)
-    case missing(WorldCaseKey)
-    case duplicate(WorldCaseKey)
-    case unexpected(WorldCaseKey)
-    case mismatchedWorld(WorldCaseKey)
+    case duplicatePlan(PlannedWorldCaseID)
+    case missing(PlannedWorldCaseID)
+    case duplicate(PlannedWorldCaseID)
+    case unexpected(PlannedWorldCaseID)
+    case mismatchedWorld(PlannedWorldCaseID)
     case mismatchedTest(SwiftTestingTestID)
     case mismatchedClaim(ClaimID)
-    case unsupportedIrrelevance(WorldCaseKey)
+    case unsupportedIrrelevance(PlannedWorldCaseID)
 }
 
 public struct UnboundAggregateWorldCases: Equatable, Sendable {
@@ -76,8 +62,8 @@ public struct StructurallyMatchedWorldCases<Polarity>: Sendable {
 public struct WorldCasePlan<Polarity>: Sendable {
     public let claim: Claim<Polarity>
     public let test: SwiftTestingTestID
-    private let cases: [WorldCaseKey: World]
-    private let order: [WorldCaseKey]
+    private let cases: [PlannedWorldCaseID: World]
+    private let order: [PlannedWorldCaseID]
     private let expectedCount: EvidenceCount
 
     public init(
@@ -85,10 +71,10 @@ public struct WorldCasePlan<Polarity>: Sendable {
         test: SwiftTestingTestID,
         claim: Claim<Polarity>
     ) throws(WorldCaseAccountingError) {
-        var cases: [WorldCaseKey: World] = [:]
-        var order: [WorldCaseKey] = []
+        var cases: [PlannedWorldCaseID: World] = [:]
+        var order: [PlannedWorldCaseID] = []
         for world in worlds {
-            let key = WorldCaseKey.planned(world)
+            let key = PlannedWorldCaseID.planned(world)
             if cases.updateValue(world, forKey: key) != nil {
                 throw .duplicatePlan(key)
             }
@@ -121,9 +107,9 @@ public struct WorldCasePlan<Polarity>: Sendable {
     package func account(
         individuals: [UnverifiedIndividualWorldCase<Polarity>]
     ) throws(WorldCaseAccountingError) -> StructurallyMatchedWorldCases<Polarity> {
-        var observed: [WorldCaseKey: UnverifiedIndividualWorldCase<Polarity>] = [:]
+        var observed: [PlannedWorldCaseID: UnverifiedIndividualWorldCase<Polarity>] = [:]
         for individual in individuals {
-            let key = WorldCaseKey.planned(individual.world)
+            let key = PlannedWorldCaseID.planned(individual.world)
             guard let planned = cases[key] else {
                 throw .unexpected(key)
             }

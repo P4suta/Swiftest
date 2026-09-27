@@ -1,4 +1,4 @@
-public enum LawCode: String, CaseIterable, Hashable, Sendable {
+@frozen public enum LawCode: String, CaseIterable, Hashable, Sendable {
     case forbiddenComment = "comment.forbidden"
     case handwrittenDocumentation = "documentation.handwritten"
     case unreadableSource = "source.unreadable"

@@ -17,43 +17,13 @@ func everyLawHasExactlyOneLegalAndIllegalFixture() {
 
 @Test
 func syntacticLawFixturesDetectOnlyIllegalForms() {
-    let syntactic: Set<LawCode> = [
-        .forbiddenComment,
-        .unreadableSource,
-        .prohibitedTry,
-        .forceUnwrap,
-        .forceCast,
-        .stringError,
-        .ignoredResult,
-        .semanticDefault,
-        .optionalBoolean,
-        .policyBoolean,
-        .defaultClosedDomain,
-        .handwrittenCases,
-        .uninspectedMacro,
-        .rawProcess,
-        .detachedTask,
-        .globalMutableState,
-        .ownedExistential,
-        .anyType,
-        .mirror,
-        .uncheckedArithmetic,
-        .directEnvironment,
-        .directClock,
-        .directRandomness,
-        .directFileWrite,
-        .unsafeOutsideBoundary,
-    ]
-    for fixture in LawFixtureCatalog.all where syntactic.contains(fixture.law) {
-        let legalPath = fixture.law == .uninspectedMacro
-            ? "Sources/SwiftestTesting/Macros.swift"
-            : "Sources/Fixture/Fixture.swift"
-        let legal = LawScanner.scanSwiftSource(fixture.legal, path: legalPath)
+    for fixture in LawFixtureCatalog.all {
+        guard case .swiftSource(let path) = fixture.verification else {
+            continue
+        }
+        let legal = LawScanner.scanSwiftSource(fixture.legal, path: path.rawValue)
         #expect(!legal.contains(where: { $0.law == fixture.law }))
-        let illegal = LawScanner.scanSwiftSource(
-            fixture.illegal,
-            path: "Sources/Fixture/Fixture.swift"
-        )
+        let illegal = LawScanner.scanSwiftSource(fixture.illegal, path: path.rawValue)
         #expect(illegal.contains(where: { $0.law == fixture.law }))
     }
 }
