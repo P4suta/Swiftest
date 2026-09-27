@@ -36,6 +36,16 @@ public enum LeanTrust {
         + "name = \"swiftest-proof-oracle\"\n"
         + "root = \"SwiftestProofs.Oracle\"\n"
     private static let leanToolchain = PinnedLeanToolchain.marker + "\n"
+    private static let expectedManifest: JSONValue = .object([
+        "version": .string("1.2.0"),
+        "packagesDir": .string(".lake/packages"),
+        "packages": .array([]),
+        "name": .string("swiftest"),
+        "lakeDir": .string(".lake"),
+        "fixedToolchain": .boolean(false),
+    ])
+
+    static let canonicalManifest = StrictJSON.encode(expectedManifest)
 
     public static func audit(root: String) throws(LeanTrustError) {
         try auditConfiguration(root: root)
@@ -54,15 +64,7 @@ public enum LeanTrust {
         } catch let error {
             throw .lakeManifestCodec(error)
         }
-        let expected: JSONValue = .object([
-            "version": .string("1.2.0"),
-            "packagesDir": .string(".lake/packages"),
-            "packages": .array([]),
-            "name": .string("swiftest"),
-            "lakeDir": .string(".lake"),
-            "fixedToolchain": .boolean(false),
-        ])
-        guard document == expected else {
+        guard document == expectedManifest else {
             throw .lakeManifestMismatch
         }
     }

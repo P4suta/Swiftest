@@ -2,17 +2,42 @@ import Foundation
 import SwiftestModel
 import SwiftestPlatform
 
+enum LeanManifestPresence: Equatable {
+    case absent
+    case present
+}
+
 struct LeanProofInputInventory: Equatable {
-    static let configurationFiles = ["lakefile.toml", "lean-toolchain", "lake-manifest.json", "SwiftestProofs.lean"]
+    static let configurationFiles = ["lakefile.toml", "lean-toolchain", "SwiftestProofs.lean"]
 
     let directories: [String]
     let files: [String]
+    let manifestPresence: LeanManifestPresence
 
     var allFiles: [String] {
-        (Self.configurationFiles + files).sorted()
+        let manifestFiles: [String]
+        switch manifestPresence {
+        case .absent:
+            manifestFiles = []
+        case .present:
+            manifestFiles = ["lake-manifest.json"]
+        }
+        return (Self.configurationFiles + manifestFiles + files).sorted()
+    }
+
+    func includingManifest() -> LeanProofInputInventory {
+        LeanProofInputInventory(directories: directories, files: files, manifestPresence: .present)
     }
 
     static func collect(root: String) throws(LeanTrustError) -> LeanProofInputInventory {
+        let rootEntries: [String]
+        do {
+            rootEntries = try FileSystemBoundary.list(path: root)
+        } catch let error {
+            throw .platform(error)
+        }
+        let manifestPresence: LeanManifestPresence = rootEntries.contains("lake-manifest.json")
+            ? .present : .absent
         var directories: [String] = []
         var files: [String] = []
         try collectDirectory(
@@ -21,7 +46,11 @@ struct LeanProofInputInventory: Equatable {
             directories: &directories,
             files: &files
         )
-        return LeanProofInputInventory(directories: directories.sorted(), files: files.sorted())
+        return LeanProofInputInventory(
+            directories: directories.sorted(),
+            files: files.sorted(),
+            manifestPresence: manifestPresence
+        )
     }
 
     private static func collectDirectory(
@@ -116,13 +145,46 @@ enum LeanEventContinuity {
 }
 
 struct LeanProofSnapshot: ~Copyable {
+    private struct SealedInput {
+        let inventory: LeanProofInputInventory
+        let bytes: [String: Data]
+        let digests: [String: Digest]
+
+        private init(inventory: LeanProofInputInventory, bytes: [String: Data], digests: [String: Digest]) {
+            self.inventory = inventory
+            self.bytes = bytes
+            self.digests = digests
+        }
+
+        static func capture(root: String, inventory: LeanProofInputInventory) throws(LeanProofSnapshotError) -> SealedInput {
+            let captured = try LeanProofSnapshot.capture(root: root, inventory: inventory)
+            return SealedInput(inventory: inventory, bytes: captured.bytes, digests: captured.digests)
+        }
+
+        func insertingGeneratedManifest() throws(LeanProofSnapshotError) -> SealedInput {
+            guard inventory.manifestPresence == .absent else {
+                throw .changed("manifest-already-present")
+            }
+            let manifest = LeanTrust.canonicalManifest
+            var bytes = bytes
+            var digests = digests
+            bytes["lake-manifest.json"] = manifest
+            do {
+                digests["lake-manifest.json"] = try Digest.sha256(manifest)
+            } catch let error {
+                throw .digest(error)
+            }
+            return SealedInput(inventory: inventory.includingManifest(), bytes: bytes, digests: digests)
+        }
+    }
+
     private let scratch: ScratchDirectoryOwner
     private let sourceIdentity: CanonicalDirectoryIdentity
     private let snapshotIdentity: CanonicalDirectoryIdentity
     private let sourceLease: FileEventLease
     private let snapshotLease: FileEventLease
-    private let inventory: LeanProofInputInventory
-    private let digests: [String: Digest]
+    private let sourceInput: SealedInput
+    private let snapshotInput: SealedInput
     let root: String
     let proofModules: [String]
 
@@ -133,18 +195,25 @@ struct LeanProofSnapshot: ~Copyable {
         let proofModules = try Self.moduleNames(for: inventory)
         let sourceLease = try Self.lease(root: source, inventory: inventory)
         try LeanEventContinuity.requireEventFree(sourceLease, at: .sourceRegistered)
-        let captured = try Self.capture(root: source, inventory: inventory)
-        try Self.verifyClosure(root: source, inventory: inventory, digests: captured.digests)
+        let sourceInput = try SealedInput.capture(root: source, inventory: inventory)
+        try Self.verifyClosure(root: source, input: sourceInput)
         try LeanEventContinuity.requireEventFree(sourceLease, at: .sourceCaptured)
 
+        let snapshotInput: SealedInput
+        switch inventory.manifestPresence {
+        case .absent:
+            snapshotInput = try sourceInput.insertingGeneratedManifest()
+        case .present:
+            snapshotInput = sourceInput
+        }
         let scratch = try Self.makeScratch()
         let snapshotPath = scratch.path + "/source"
-        try Self.writeSnapshot(captured.bytes, inventory: inventory, scratch: scratch)
+        try Self.writeSnapshot(snapshotInput, scratch: scratch)
         let snapshotIdentity = try Self.directoryIdentity(snapshotPath)
         let root = snapshotIdentity.canonicalPath
         try Self.verifySnapshotRoot(root: root)
-        let snapshotLease = try Self.lease(root: root, inventory: inventory)
-        try Self.verifyClosure(root: root, inventory: inventory, digests: captured.digests)
+        let snapshotLease = try Self.lease(root: root, inventory: snapshotInput.inventory)
+        try Self.verifyClosure(root: root, input: snapshotInput)
         try LeanEventContinuity.requireEventFree(snapshotLease, at: .snapshotCopied)
         do {
             try LeanTrust.audit(root: root)
@@ -152,7 +221,7 @@ struct LeanProofSnapshot: ~Copyable {
         } catch let error {
             throw .trust(error)
         }
-        try Self.verifyClosure(root: root, inventory: inventory, digests: captured.digests)
+        try Self.verifyClosure(root: root, input: snapshotInput)
         try LeanEventContinuity.requireEventFree(snapshotLease, at: .snapshotTrusted)
         try LeanEventContinuity.requireEventFree(sourceLease, at: .sourceAfterSnapshotTrust)
 
@@ -161,8 +230,8 @@ struct LeanProofSnapshot: ~Copyable {
         self.snapshotIdentity = snapshotIdentity
         self.sourceLease = sourceLease
         self.snapshotLease = snapshotLease
-        self.inventory = inventory
-        self.digests = captured.digests
+        self.sourceInput = sourceInput
+        self.snapshotInput = snapshotInput
         self.root = root
         self.proofModules = proofModules
     }
@@ -176,9 +245,9 @@ struct LeanProofSnapshot: ~Copyable {
         }
         try LeanEventContinuity.requireEventFree(sourceLease, at: .sourceBeforeRevalidation)
         try LeanEventContinuity.requireEventFree(snapshotLease, at: .snapshotBeforeRevalidation)
-        try Self.verifyClosure(root: sourceIdentity.canonicalPath, inventory: inventory, digests: digests)
+        try Self.verifyClosure(root: sourceIdentity.canonicalPath, input: sourceInput)
         try Self.verifySnapshotRoot(root: root)
-        try Self.verifyClosure(root: root, inventory: inventory, digests: digests)
+        try Self.verifyClosure(root: root, input: snapshotInput)
         try LeanEventContinuity.requireEventFree(sourceLease, at: .sourceAfterRevalidation)
         try LeanEventContinuity.requireEventFree(snapshotLease, at: .snapshotAfterRevalidation)
     }
@@ -294,14 +363,13 @@ struct LeanProofSnapshot: ~Copyable {
 
     private static func verifyClosure(
         root: String,
-        inventory: LeanProofInputInventory,
-        digests: [String: Digest]
+        input: SealedInput
     ) throws(LeanProofSnapshotError) {
-        guard try collect(root: root) == inventory else {
+        guard try collect(root: root) == input.inventory else {
             throw .changed("proof-inventory")
         }
-        let current = try capture(root: root, inventory: inventory)
-        guard current.digests == digests else {
+        let current = try capture(root: root, inventory: input.inventory)
+        guard current.digests == input.digests else {
             throw .changed("proof-bytes")
         }
     }
@@ -339,11 +407,10 @@ struct LeanProofSnapshot: ~Copyable {
     }
 
     private static func writeSnapshot(
-        _ bytes: [String: Data],
-        inventory: LeanProofInputInventory,
+        _ input: SealedInput,
         scratch: borrowing ScratchDirectoryOwner
     ) throws(LeanProofSnapshotError) {
-        for relative in ["source"] + inventory.directories.map({ "source/" + $0 }) + ["source/.lake"] {
+        for relative in ["source"] + input.inventory.directories.map({ "source/" + $0 }) + ["source/.lake"] {
             let path: ArtifactPath
             do {
                 path = try ArtifactPath.parse(relative)
@@ -359,8 +426,8 @@ struct LeanProofSnapshot: ~Copyable {
                 throw .platform(error)
             }
         }
-        for relative in inventory.allFiles {
-            guard let data = bytes[relative] else {
+        for relative in input.inventory.allFiles {
+            guard let data = input.bytes[relative] else {
                 throw .changed(relative)
             }
             let path: ArtifactPath

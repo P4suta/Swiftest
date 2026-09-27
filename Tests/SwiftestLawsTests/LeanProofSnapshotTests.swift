@@ -43,6 +43,13 @@ private func proofFixture(_ variant: String) throws -> ScratchDirectoryOwner {
     return scratch
 }
 
+private func proofInputBytes(root: String) throws -> [String: Data] {
+    let inventory = try LeanProofInputInventory.collect(root: root)
+    return try Dictionary(uniqueKeysWithValues: inventory.allFiles.map { relative in
+        (relative, try FileSystemBoundary.read(path: root + "/" + relative))
+    })
+}
+
 @Test
 func leanEventPhaseRetainsAttributePathWithoutMaskingOtherFailures() {
     guard let path = WatchedPath.validated("/private/tmp/SwiftestProofs.lean") else {
@@ -80,6 +87,87 @@ func proofSnapshotCopiesOnlyAuditedLeanInputs() throws {
     ])
     #expect(try FileSystemBoundary.read(path: snapshot.root + "/SwiftestProofs/Safe.lean")
         == Data("def safe := true\n".utf8))
+}
+
+@Test
+func proofSnapshotBootstrapsMissingManifestWithoutWritingSource() throws {
+    let source = try proofFixture("missing-manifest")
+    let manifest = try ArtifactPath.parse("lake-manifest.json")
+    try FileSystemBoundary.remove(
+        relativePath: manifest,
+        capability: source.issueWriteCapability()
+    )
+    let before = try FileSystemBoundary.list(path: source.path)
+    let sourceBytes = try proofInputBytes(root: source.path)
+    #expect(!before.contains("lake-manifest.json"))
+    let snapshot = try LeanProofSnapshot(sourceRoot: source.path)
+    try snapshot.verifyUnchanged()
+    #expect(try FileSystemBoundary.list(path: source.path) == before)
+    #expect(try proofInputBytes(root: source.path) == sourceBytes)
+    #expect(try FileSystemBoundary.read(path: snapshot.root + "/lake-manifest.json")
+        == LeanTrust.canonicalManifest)
+    try LeanTrust.auditManifest(root: snapshot.root)
+}
+
+@Test
+func proofSnapshotRetainsPresentManifestAndSourceBytes() throws {
+    let source = try proofFixture("present-manifest")
+    let sourceBytes = try proofInputBytes(root: source.path)
+    let snapshot = try LeanProofSnapshot(sourceRoot: source.path)
+    try snapshot.verifyUnchanged()
+    #expect(try proofInputBytes(root: source.path) == sourceBytes)
+    #expect(try FileSystemBoundary.read(path: snapshot.root + "/lake-manifest.json")
+        == sourceBytes["lake-manifest.json"])
+    try LeanTrust.auditManifest(root: snapshot.root)
+}
+
+@Test
+func proofSnapshotRejectsMalformedPresentManifest() throws {
+    let source = try proofFixture("malformed-manifest")
+    let manifest = try ArtifactPath.parse("lake-manifest.json")
+    try FileSystemBoundary.write(
+        Data("{\"packages\":[],\"packages\":[]}".utf8),
+        relativePath: manifest,
+        capability: source.issueWriteCapability()
+    )
+    do {
+        let snapshot = try LeanProofSnapshot(sourceRoot: source.path)
+        Issue.record("malformed manifest reached Lake at \(snapshot.root)")
+    } catch let error {
+        guard case .trust(.lakeManifestCodec(.duplicateKey)) = error else {
+            Issue.record("wrong malformed manifest diagnostic: \(error)")
+            return
+        }
+    }
+}
+
+@Test
+func proofSnapshotRejectsReversibleManifestInsertionAfterBootstrap() throws {
+    let source = try proofFixture("manifest-insertion")
+    let manifest = try ArtifactPath.parse("lake-manifest.json")
+    try FileSystemBoundary.remove(
+        relativePath: manifest,
+        capability: source.issueWriteCapability()
+    )
+    let snapshot = try LeanProofSnapshot(sourceRoot: source.path)
+    try FileSystemBoundary.write(
+        LeanTrust.canonicalManifest,
+        relativePath: manifest,
+        capability: source.issueWriteCapability()
+    )
+    try FileSystemBoundary.remove(
+        relativePath: manifest,
+        capability: source.issueWriteCapability()
+    )
+    do {
+        try snapshot.verifyUnchanged()
+        Issue.record("reversible manifest insertion escaped source lease")
+    } catch let error {
+        guard case .platform(.changedWhileWatched) = error else {
+            Issue.record("wrong manifest insertion diagnostic: \(error)")
+            return
+        }
+    }
 }
 
 @Test
