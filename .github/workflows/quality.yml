@@ -47,6 +47,7 @@ jobs:
           tar -xzf "${archive}" -C "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/elan-init" -y --no-modify-path \
             --default-toolchain leanprover/lean4:v4.34.1
+          "${HOME}/.elan/bin/elan" toolchain install leanprover/lean4:v4.34.1
           printf '%s\n' "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
       - name: Verify source and proofs
         run: Scripts/quality
