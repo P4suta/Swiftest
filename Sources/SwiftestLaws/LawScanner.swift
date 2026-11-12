@@ -516,7 +516,7 @@ public enum LawScanner {
             ))
         }
         for comment in scan.comments {
-            if isAllowedOtherComment(comment, path: relativePath) {
+            if isAllowedOtherComment(comment, path: relativePath, source: source) {
                 continue
             }
             violations.append(violation(
@@ -3025,9 +3025,28 @@ public enum LawScanner {
         return false
     }
 
-    private static func isAllowedOtherComment(_ comment: LexedComment, path: String) -> Bool {
-        path.hasPrefix("Scripts/") && comment.offset == 0 && comment.text == "#!/bin/sh"
-            || path.hasPrefix(".githooks/") && comment.offset == 0 && comment.text == "#!/bin/sh"
+    private static func isAllowedOtherComment(_ comment: LexedComment, path: String, source: String) -> Bool {
+        if (path.hasPrefix("Scripts/") || path.hasPrefix(".githooks/"))
+            && comment.offset == 0 && comment.text == "#!/bin/sh" {
+            return true
+        }
+        let components = path.split(separator: "/")
+        guard components.count == 3 && components[0] == ".github" && components[1] == "workflows",
+            path.hasSuffix(".yml") || path.hasSuffix(".yaml"),
+            comment.text.range(
+                of: #"^# v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"#,
+                options: .regularExpression
+            ) != nil else {
+            return false
+        }
+        let prefix = String(decoding: source.utf8.prefix(comment.offset), as: UTF8.self)
+        guard let line = prefix.split(separator: "\n", omittingEmptySubsequences: false).last else {
+            return false
+        }
+        return String(line).range(
+            of: #"^[ \t]*(-[ \t]+)?uses:[ \t]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[a-f0-9]{40}[ \t]+$"#,
+            options: .regularExpression
+        ) != nil
     }
 
     private static func commentKind(_ text: String) -> String {

@@ -141,6 +141,42 @@ func commentsRemainForbiddenOutsideSwiftYAMLAndLeanStrings() {
 }
 
 @Test
+func workflowVersionAnnotationsRequirePinnedActions() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-action-versions-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let workflow = try ArtifactPath.parse(".github/workflows/quality.yml")
+    let hash = "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+    let lines = [
+        "  - uses: actions/checkout@\(hash) # v5.1.0",
+        "    uses: actions/checkout@\(hash) # v5.1.0",
+        "  - uses: actions/checkout@v5 # v5.1.0",
+        "  - uses: actions/checkout@\(hash.dropLast()) # v5.1.0",
+        "  - uses: actions/checkout@\(hash) # v5.1.0 annotation",
+        "  - uses: actions/checkout@\(hash) # v5",
+        "  - run: actions/checkout@\(hash) # v5.1.0",
+        "# v5.1.0",
+    ]
+    try FileSystemBoundary.write(
+        Data((lines.joined(separator: "\n") + "\n").utf8),
+        relativePath: workflow,
+        capability: scratch.issueWriteCapability()
+    )
+    let script = try ArtifactPath.parse("Scripts/quality")
+    try FileSystemBoundary.write(
+        Data((lines[0] + "\n").utf8),
+        relativePath: script,
+        capability: scratch.issueWriteCapability()
+    )
+    let report = try LawScanner.scan(root: scratch.path)
+    let comments = report.violations.filter { $0.law == .forbiddenComment }
+    #expect(comments.filter { $0.location.file == ".github/workflows/quality.yml" }
+        .map(\.location.line).sorted() == [3, 4, 5, 6, 7, 8])
+    #expect(comments.contains { $0.location.file == "Scripts/quality" })
+}
+
+@Test
 func lawScannerRejectsLeanRawStringBeforeHiddenProofHole() throws {
     let scratch = try ScratchDirectoryOwner(
         parent: "/private/tmp",
