@@ -244,6 +244,8 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     let report = try ArtifactPath.parse("report.json")
     let targetResource = try ArtifactPath.parse("Sources/SwiftestModel/Resources/result.json")
     let workflowOutput = try ArtifactPath.parse(".github/workflows/result.xml")
+    let workflowLint = try ArtifactPath.parse(".github/actionlint.yaml")
+    let workflowLintOutput = try ArtifactPath.parse(".github/actionlint-output.yaml")
     let distributionOutput = try ArtifactPath.parse("dist/Generated.swift")
     let signingOutput = try ArtifactPath.parse(".local-signing/Generated.swift")
     try FileSystemBoundary.write(Data("{}".utf8), relativePath: report, capability: scratch.issueWriteCapability())
@@ -257,6 +259,13 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
         relativePath: workflowOutput,
         capability: scratch.issueWriteCapability()
     )
+    for path in [workflowLint, workflowLintOutput] {
+        try FileSystemBoundary.write(
+            Data("self-hosted-runner:\n  labels:\n    - xcode-27\n".utf8),
+            relativePath: path,
+            capability: scratch.issueWriteCapability()
+        )
+    }
     try FileSystemBoundary.write(
         Data("// generated\n".utf8),
         relativePath: distributionOutput,
@@ -274,6 +283,10 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     })
     #expect(result.violations.contains {
         $0.law == .unclassifiedSource && $0.location.file == ".github/workflows/result.xml"
+    })
+    #expect(!result.violations.contains { $0.location.file == ".github/actionlint.yaml" })
+    #expect(result.violations.contains {
+        $0.law == .unclassifiedSource && $0.location.file == ".github/actionlint-output.yaml"
     })
     #expect(!result.violations.contains {
         $0.location.file == "dist/Generated.swift" || $0.location.file == ".local-signing/Generated.swift"

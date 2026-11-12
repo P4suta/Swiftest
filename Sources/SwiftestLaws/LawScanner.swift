@@ -2939,9 +2939,10 @@ public enum LawScanner {
         case ".githooks":
             return path == ".githooks/pre-push"
         case ".github":
-            return components.count == 3
+            return path == ".github/actionlint.yaml"
+                || (components.count == 3
                 && components[1] == "workflows"
-                && (path.hasSuffix(".yml") || path.hasSuffix(".yaml"))
+                && (path.hasSuffix(".yml") || path.hasSuffix(".yaml")))
         case "Fixtures":
             guard components.count >= 4 && components[1] == "CompileFail" else {
                 return false
