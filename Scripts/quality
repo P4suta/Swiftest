@@ -1,6 +1,21 @@
 #!/bin/sh
 set -eu
 project_root=$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd)
+phase=all
+if test "$#" -ne 0; then
+	if test "$#" -ne 2 || test "$1" != --phase; then
+		echo 'usage: Scripts/quality [--phase source|mutations|proof-toolchain|formal|dogfood]' >&2
+		exit 2
+	fi
+	phase=$2
+	case "${phase}" in
+	source | mutations | proof-toolchain | formal | dogfood) ;;
+	*)
+		echo "unknown quality phase: ${phase}" >&2
+		exit 2
+		;;
+	esac
+fi
 module_cache=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-module-cache.XXXXXX")
 trap 'rm -rf "${module_cache}"' EXIT HUP INT TERM
 export CLANG_MODULE_CACHE_PATH="${module_cache}"
@@ -9,13 +24,24 @@ cd "${project_root}"
 seal_before="${module_cache}/seal-before"
 seal_after="${module_cache}/seal-after"
 find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore docs -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"${seal_before}"
-swift build --disable-sandbox --disable-index-store -j 4
-"${project_root}/Scripts/platform-check"
-swift test --disable-sandbox --disable-index-store -j 4
-swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal
-"${project_root}/Scripts/compile-fail"
-"${project_root}/Scripts/mutate-laws"
-"${project_root}/Scripts/formal-check"
-"${project_root}/Scripts/dogfood"
+if test "${phase}" = all || test "${phase}" = source; then
+	swift build --disable-sandbox --disable-index-store -j 4
+	"${project_root}/Scripts/platform-check"
+	swift test --disable-sandbox --disable-index-store -j 4
+	swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal
+	"${project_root}/Scripts/compile-fail"
+fi
+if test "${phase}" = all || test "${phase}" = mutations; then
+	"${project_root}/Scripts/mutate-laws" --phase mutations
+fi
+if test "${phase}" = all || test "${phase}" = proof-toolchain; then
+	"${project_root}/Scripts/mutate-laws" --phase proof-toolchain
+fi
+if test "${phase}" = all || test "${phase}" = formal; then
+	"${project_root}/Scripts/formal-check"
+fi
+if test "${phase}" = all || test "${phase}" = dogfood; then
+	"${project_root}/Scripts/dogfood"
+fi
 find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore docs -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"${seal_after}"
 cmp "${seal_before}" "${seal_after}"

@@ -1,22 +1,25 @@
 name: quality
-
 on:
   push:
     branches: [main]
   pull_request:
-
 permissions:
   contents: read
-
 concurrency:
   group: quality-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  assurance:
-    name: Verify source and proofs
+  campaign:
+    name: Verify ${{ matrix.phase }}
     runs-on: xcode-27
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        phase: [source, mutations, proof-toolchain, formal, dogfood]
+    env:
+      QUALITY_PHASE: ${{ matrix.phase }}
     steps:
       - name: Create checkout volume without access-time updates
         id: checkout-volume
@@ -65,16 +68,36 @@ jobs:
           "${HOME}/.elan/bin/elan" toolchain install leanprover/lean4:v4.34.1
           printf '%s\n' "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
       - name: Verify source and proofs
-        run: Scripts/quality
+        env:
+          TMPDIR: ${{ github.workspace }}/.build/temporary
+        run: |
+          mkdir -p "${TMPDIR}"
+          Scripts/quality --phase "${QUALITY_PHASE}"
       - name: Check out external test target
+        if: matrix.phase == 'dogfood'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: P4suta/njutest
           path: .build/dogfood/njutest
           persist-credentials: false
       - name: Verify external test target
+        if: matrix.phase == 'dogfood'
+        env:
+          TMPDIR: ${{ github.workspace }}/.build/temporary
         run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"
       - name: Detach checkout volume
         if: always() && steps.checkout-volume.outcome == 'success'
         working-directory: ${{ runner.temp }}
         run: diskutil eject "${GITHUB_WORKSPACE}"
+  assurance:
+    name: Verify source and proofs
+    needs: campaign
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every campaign phase
+        env:
+          RESULT: ${{ needs.campaign.result }}
+        run: test "${RESULT}" = success
