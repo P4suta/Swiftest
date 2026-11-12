@@ -18,9 +18,9 @@ private let snapshotLakefile = "name = \"swiftest\"\n"
 private let snapshotManifest = "{\"version\":\"1.2.0\",\"packagesDir\":\".lake/packages\","
     + "\"packages\":[],\"name\":\"swiftest\",\"lakeDir\":\".lake\",\"fixedToolchain\":false}"
 
-private func proofFixture(_ variant: String) throws -> ScratchDirectoryOwner {
+private func proofFixture(_ variant: String, parent: String = "/private/tmp") throws -> ScratchDirectoryOwner {
     let scratch = try ScratchDirectoryOwner(
-        parent: "/private/tmp",
+        parent: parent,
         name: "swiftest-proof-snapshot-" + variant + "-"
             + String(PlatformClock.monotonicNanoseconds().rawValue)
     )
@@ -65,6 +65,21 @@ func leanEventPhaseRetainsAttributePathWithoutMaskingOtherFailures() {
             LeanEventContinuity.map(.eventGenerationOverflow, at: phase)
                 == .platform(.eventGenerationOverflow)
         )
+    }
+}
+
+@Test
+func proofSnapshotKeepsMappedSourceReadsEventFreeOnItsProofVolume() throws {
+    let volume = try NoAccessTimeVolumeOwner()
+    try volume.withRoot { (parent: String) throws -> Void in
+        let source = try proofFixture("mapped-source", parent: parent)
+        let snapshot = try LeanProofSnapshot(sourceRoot: source.path, scratchParent: parent)
+        let file = URL(fileURLWithPath: source.path + "/SwiftestProofs.lean")
+        for _ in 0..<3 {
+            let mapped = try Data(contentsOf: file, options: .alwaysMapped)
+            #expect(mapped == Data("import SwiftestProofs.Safe\n".utf8))
+            try snapshot.verifyUnchanged()
+        }
     }
 }
 

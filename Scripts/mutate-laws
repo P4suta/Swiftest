@@ -1,541 +1,552 @@
 #!/bin/sh
 set -eu
-project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mutation_selection=all
-if test "$#" -ne 0
-then
-    if test "$#" -ne 2 || test "$1" != --only \
-        || { test "$2" != world_plan_handoff && test "$2" != world_cursor_oracle \
-            && test "$2" != world_definition_preimage \
-            && test "$2" != manifest_bootstrap \
-            && test "$2" != attachment_discard && test "$2" != swift_package_denial \
-            && test "$2" != swift_package_receipt_forgery \
-            && test "$2" != fault_provenance_scanner \
-            && test "$2" != swift_testing_locus; }
-    then
-        echo "usage: Scripts/mutate-laws [--only world_plan_handoff|world_cursor_oracle|world_definition_preimage|manifest_bootstrap|attachment_discard|swift_package_denial|swift_package_receipt_forgery|fault_provenance_scanner|swift_testing_locus]" >&2
-        exit 2
-    fi
-    mutation_selection=$2
+proof_toolchain=enabled
+if test "$#" -eq 2 && test "$1" = --phase; then
+	case "$2" in
+	mutations) proof_toolchain=disabled ;;
+	proof-toolchain) mutation_selection=proof_toolchain ;;
+	*)
+		echo 'unknown mutation phase' >&2
+		exit 2
+		;;
+	esac
+elif test "$#" -ne 0; then
+	if test "$#" -ne 2 || test "$1" != --only ||
+		{ test "$2" != world_plan_handoff && test "$2" != world_cursor_oracle &&
+			test "$2" != world_definition_preimage &&
+			test "$2" != manifest_bootstrap &&
+			test "$2" != attachment_discard && test "$2" != swift_package_denial &&
+			test "$2" != swift_package_receipt_forgery &&
+			test "$2" != fault_provenance_scanner &&
+			test "$2" != swift_testing_locus; }; then
+		echo "usage: Scripts/mutate-laws [--only world_plan_handoff|world_cursor_oracle|world_definition_preimage|manifest_bootstrap|attachment_discard|swift_package_denial|swift_package_receipt_forgery|fault_provenance_scanner|swift_testing_locus]" >&2
+		exit 2
+	fi
+	mutation_selection=$2
 fi
 scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-law-mutation.XXXXXX")
 trap 'rm -rf "$scratch_root"' EXIT HUP INT TERM
 discard_mutation_build() {
-    if test -L "$scratch_root/build"
-    then
-        echo "mutation build directory became a symbolic link"
-        exit 1
-    fi
-    rm -rf "$scratch_root/build"
+	if test -L "${scratch_root}/build"; then
+		echo "mutation build directory became a symbolic link"
+		exit 1
+	fi
+	rm -rf "${scratch_root}/build"
 }
-copy_root="$scratch_root/source"
-mkdir -p "$copy_root"
+copy_root="${scratch_root}/source"
+mkdir -p "${copy_root}"
 /usr/bin/rsync -a \
-    --exclude='.git/' \
-    --exclude='.build/' \
-    --exclude='.lake/' \
-    --exclude='.swiftpm/' \
-    --exclude='DerivedData/' \
-    "$project_root/" "$copy_root/"
-scanner="$copy_root/Sources/SwiftestLaws/LawScanner.swift"
-manifest_graph="$copy_root/Sources/SwiftestLaws/PackageManifestGraph.swift"
-lean_trust="$copy_root/Sources/SwiftestLaws/LeanTrust.swift"
-lean_snapshot="$copy_root/Sources/SwiftestLaws/LeanProofSnapshot.swift"
-other_source_lexer="$copy_root/Sources/SwiftestLaws/OtherSourceLexer.swift"
-vnode_adapter="$copy_root/Sources/SwiftestPlatform/ABIAdapter.swift"
-catalog_serializer="$copy_root/Sources/SwiftestReport/AssuredReport.swift"
-world_space="$copy_root/Sources/SwiftestEngine/WorldSpace.swift"
-world_cursor_oracle="$copy_root/Sources/SwiftestEngine/WorldCursorOracle.swift"
-testing_stream="$copy_root/Sources/SwiftestEngine/SwiftTestingStream.swift"
-target_observer="$copy_root/Sources/SwiftestEngine/SwiftPackageTargetObserver.swift"
-boundary_campaign="$copy_root/Sources/SwiftestEngine/SwiftPackageBoundaryFaultCampaign.swift"
-event_lease="$copy_root/Sources/SwiftestPlatform/FileEventLease.swift"
-command_source="$copy_root/Sources/SwiftestCLI/SwiftestCommand.swift"
-scanner_original="$scratch_root/LawScanner.swift"
-manifest_graph_original="$scratch_root/PackageManifestGraph.swift"
-lean_trust_original="$scratch_root/LeanTrust.swift"
-lean_snapshot_original="$scratch_root/LeanProofSnapshot.swift"
-other_source_lexer_original="$scratch_root/OtherSourceLexer.swift"
-vnode_adapter_original="$scratch_root/ABIAdapter.swift"
-catalog_serializer_original="$scratch_root/AssuredReport.swift"
-world_space_original="$scratch_root/WorldSpace.swift"
-world_cursor_oracle_original="$scratch_root/WorldCursorOracle.swift"
-testing_stream_original="$scratch_root/SwiftTestingStream.swift"
-target_observer_original="$scratch_root/SwiftPackageTargetObserver.swift"
-boundary_campaign_original="$scratch_root/SwiftPackageBoundaryFaultCampaign.swift"
-event_lease_original="$scratch_root/FileEventLease.swift"
-command_source_original="$scratch_root/SwiftestCommand.swift"
-score_source="$copy_root/Sources/SwiftestScore/AssuranceScore.swift"
-score_source_original="$scratch_root/AssuranceScore.swift"
-cp "$scanner" "$scanner_original"
-cp "$manifest_graph" "$manifest_graph_original"
-cp "$lean_trust" "$lean_trust_original"
-cp "$lean_snapshot" "$lean_snapshot_original"
-cp "$other_source_lexer" "$other_source_lexer_original"
-cp "$vnode_adapter" "$vnode_adapter_original"
-cp "$catalog_serializer" "$catalog_serializer_original"
-cp "$world_space" "$world_space_original"
-cp "$world_cursor_oracle" "$world_cursor_oracle_original"
-cp "$testing_stream" "$testing_stream_original"
-cp "$target_observer" "$target_observer_original"
-cp "$boundary_campaign" "$boundary_campaign_original"
-cp "$event_lease" "$event_lease_original"
-cp "$command_source" "$command_source_original"
-cp "$score_source" "$score_source_original"
-module_cache="$scratch_root/module-cache"
-mkdir -p "$module_cache"
-export CLANG_MODULE_CACHE_PATH="$module_cache"
-export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
+	--exclude='.git/' \
+	--exclude='.build/' \
+	--exclude='.lake/' \
+	--exclude='.swiftpm/' \
+	--exclude='DerivedData/' \
+	"${project_root}/" "${copy_root}/"
+scanner="${copy_root}/Sources/SwiftestLaws/LawScanner.swift"
+manifest_graph="${copy_root}/Sources/SwiftestLaws/PackageManifestGraph.swift"
+lean_trust="${copy_root}/Sources/SwiftestLaws/LeanTrust.swift"
+lean_snapshot="${copy_root}/Sources/SwiftestLaws/LeanProofSnapshot.swift"
+other_source_lexer="${copy_root}/Sources/SwiftestLaws/OtherSourceLexer.swift"
+vnode_adapter="${copy_root}/Sources/SwiftestPlatform/ABIAdapter.swift"
+catalog_serializer="${copy_root}/Sources/SwiftestReport/AssuredReport.swift"
+world_space="${copy_root}/Sources/SwiftestEngine/WorldSpace.swift"
+world_cursor_oracle="${copy_root}/Sources/SwiftestEngine/WorldCursorOracle.swift"
+testing_stream="${copy_root}/Sources/SwiftestEngine/SwiftTestingStream.swift"
+target_observer="${copy_root}/Sources/SwiftestEngine/SwiftPackageTargetObserver.swift"
+boundary_campaign="${copy_root}/Sources/SwiftestEngine/SwiftPackageBoundaryFaultCampaign.swift"
+event_lease="${copy_root}/Sources/SwiftestPlatform/FileEventLease.swift"
+command_source="${copy_root}/Sources/SwiftestCLI/SwiftestCommand.swift"
+scanner_original="${scratch_root}/LawScanner.swift"
+manifest_graph_original="${scratch_root}/PackageManifestGraph.swift"
+lean_trust_original="${scratch_root}/LeanTrust.swift"
+lean_snapshot_original="${scratch_root}/LeanProofSnapshot.swift"
+other_source_lexer_original="${scratch_root}/OtherSourceLexer.swift"
+vnode_adapter_original="${scratch_root}/ABIAdapter.swift"
+catalog_serializer_original="${scratch_root}/AssuredReport.swift"
+world_space_original="${scratch_root}/WorldSpace.swift"
+world_cursor_oracle_original="${scratch_root}/WorldCursorOracle.swift"
+testing_stream_original="${scratch_root}/SwiftTestingStream.swift"
+target_observer_original="${scratch_root}/SwiftPackageTargetObserver.swift"
+boundary_campaign_original="${scratch_root}/SwiftPackageBoundaryFaultCampaign.swift"
+event_lease_original="${scratch_root}/FileEventLease.swift"
+command_source_original="${scratch_root}/SwiftestCommand.swift"
+score_source="${copy_root}/Sources/SwiftestScore/AssuranceScore.swift"
+score_source_original="${scratch_root}/AssuranceScore.swift"
+cp "${scanner}" "${scanner_original}"
+cp "${manifest_graph}" "${manifest_graph_original}"
+cp "${lean_trust}" "${lean_trust_original}"
+cp "${lean_snapshot}" "${lean_snapshot_original}"
+cp "${other_source_lexer}" "${other_source_lexer_original}"
+cp "${vnode_adapter}" "${vnode_adapter_original}"
+cp "${catalog_serializer}" "${catalog_serializer_original}"
+cp "${world_space}" "${world_space_original}"
+cp "${world_cursor_oracle}" "${world_cursor_oracle_original}"
+cp "${testing_stream}" "${testing_stream_original}"
+cp "${target_observer}" "${target_observer_original}"
+cp "${boundary_campaign}" "${boundary_campaign_original}"
+cp "${event_lease}" "${event_lease_original}"
+cp "${command_source}" "${command_source_original}"
+cp "${score_source}" "${score_source_original}"
+module_cache="${scratch_root}/module-cache"
+mkdir -p "${module_cache}"
+export CLANG_MODULE_CACHE_PATH="${module_cache}"
+export SWIFTPM_MODULECACHE_OVERRIDE="${module_cache}"
+check_pinned_proof_toolchain() {
+	incremental_log="${scratch_root}/proof-toolchain.log"
+	lean_shim_dir="${scratch_root}/lean-path-shim"
+	mkdir -p "${lean_shim_dir}" "${copy_root}/.lake/build/bin"
+	cp /usr/bin/false "${lean_shim_dir}/lake"
+	cp /usr/bin/false "${lean_shim_dir}/lean"
+	cp /usr/bin/false "${lean_shim_dir}/leanchecker"
+	cp /usr/bin/false "${lean_shim_dir}/swift"
+	cp /usr/bin/false "${copy_root}/.lake/build/bin/leanchecker"
+	if ! PATH="${lean_shim_dir}:${PATH}" "${cli_bin_dir}/swiftest" laws "${copy_root}" --formal >"${incremental_log}" 2>&1; then
+		sed -n '1,200p' "${incremental_log}"
+		if grep -Fq 'attributeAmbiguity(' "${incremental_log}"; then
+			echo "formal-path-shim=UNSETTLED attribute event during proof snapshot"
+			exit 1
+		fi
+		echo "pinned Lean toolchain used an untrusted executable"
+		exit 1
+	fi
+	echo "lean-path-shim=passed"
+	if ! PATH="${lean_shim_dir}:${PATH}" "${copy_root}/Scripts/formal-check" >"${incremental_log}" 2>&1; then
+		sed -n '1,200p' "${incremental_log}"
+		echo "formal check used an untrusted Lean executable"
+		exit 1
+	fi
+	echo "formal-check-path-shim=passed"
+}
+if test "${mutation_selection}" = proof_toolchain; then
+	swift build --disable-sandbox --disable-index-store -j 2 \
+		--package-path "${copy_root}" --scratch-path "${scratch_root}/proof-build" --product swiftest
+	cli_bin_dir=$(swift build --package-path "${copy_root}" \
+		--scratch-path "${scratch_root}/proof-build" --show-bin-path)
+	check_pinned_proof_toolchain
+	exit 0
+fi
 require_mutant_test_failure() {
-    if test "$1" -ne 1 \
-        || ! grep -Fq 'Build complete!' "$2" \
-        || ! grep -Eq 'Test run with .* failed|Test Suite .* failed' "$2" \
-        || grep -Eq '^error:|:[0-9]+:[0-9]+: error:|Build failed' "$2"
-    then
-        sed -n '1,200p' "$2"
-        echo "$3 failed without a completed build and test rejection (exit $1)" >&2
-        exit 1
-    fi
+	if test "$1" -ne 1 ||
+		! grep -Fq 'Build complete!' "$2" ||
+		! grep -Eq 'Test run with .* failed|Test Suite .* failed' "$2" ||
+		grep -Eq '^error:|:[0-9]+:[0-9]+: error:|Build failed' "$2"; then
+		sed -n '1,200p' "$2"
+		echo "$3 failed without a completed build and test rejection (exit $1)" >&2
+		exit 1
+	fi
 }
 require_semantic_mutant_killed() {
-    mutant_filter=$1
-    mutant_log=$2
-    mutant_name=$3
-    if swift test --disable-sandbox --disable-index-store -j 2 \
-        --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-        --filter "$mutant_filter" >"$mutant_log" 2>&1
-    then
-        echo "$mutant_name survived"
-        exit 1
-    else
-        mutant_exit_status=$?
-    fi
-    require_mutant_test_failure "$mutant_exit_status" "$mutant_log" "$mutant_name"
+	mutant_filter=$1
+	mutant_log=$2
+	mutant_name=$3
+	if swift test --disable-sandbox --disable-index-store -j 2 \
+		--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+		--filter "${mutant_filter}" >"${mutant_log}" 2>&1; then
+		echo "${mutant_name} survived"
+		exit 1
+	else
+		mutant_exit_status=$?
+	fi
+	require_mutant_test_failure "${mutant_exit_status}" "${mutant_log}" "${mutant_name}"
 }
 mutate_world_cursor_oracle() {
-    perl -0pi -e 's/try index\(world\.locale, in: locales, axis: \.locale\)/try index(world.locale, in: Array(locales.reversed()), axis: .locale)/' "$world_cursor_oracle"
-    if cmp -s "$world_cursor_oracle" "$world_cursor_oracle_original"
-    then
-        echo "world cursor oracle mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed worldCursorOracleCoversEveryHeterogeneousCoordinate \
-        "$scratch_root/world-cursor-oracle.log" world-cursor-oracle
-    cp "$world_cursor_oracle_original" "$world_cursor_oracle"
+	perl -0pi -e 's/try index\(world\.locale, in: locales, axis: \.locale\)/try index(world.locale, in: Array(locales.reversed()), axis: .locale)/' "${world_cursor_oracle}"
+	if cmp -s "${world_cursor_oracle}" "${world_cursor_oracle_original}"; then
+		echo "world cursor oracle mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed worldCursorOracleCoversEveryHeterogeneousCoordinate \
+		"${scratch_root}/world-cursor-oracle.log" world-cursor-oracle
+	cp "${world_cursor_oracle_original}" "${world_cursor_oracle}"
 }
 mutate_world_definition_preimage() {
-    perl -0pi -e 's/for value in values \{\n                try encode\(&self, value\)\n            \}/for value in values {\n                if name != "locale" { try encode(&self, value) }\n            }/' "$world_space"
-    if cmp -s "$world_space" "$world_space_original"
-    then
-        echo "world definition preimage mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed worldCursorOracleCoversEveryHeterogeneousCoordinate \
-        "$scratch_root/world-definition-preimage.log" world-definition-preimage
-    cp "$world_space_original" "$world_space"
+	perl -0pi -e 's/for value in values \{\n                try encode\(&self, value\)\n            \}/for value in values {\n                if name != "locale" { try encode(&self, value) }\n            }/' "${world_space}"
+	if cmp -s "${world_space}" "${world_space_original}"; then
+		echo "world definition preimage mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed worldCursorOracleCoversEveryHeterogeneousCoordinate \
+		"${scratch_root}/world-definition-preimage.log" world-definition-preimage
+	cp "${world_space_original}" "${world_space}"
 }
 mutate_manifest_bootstrap() {
-    perl -0pi -e 's/bytes\["lake-manifest\.json"\] = manifest/bytes["lake-manifest.json"] = nil/' "$lean_snapshot"
-    if cmp -s "$lean_snapshot" "$lean_snapshot_original"
-    then
-        echo "Lean manifest bootstrap mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed proofSnapshotBootstrapsMissingManifestWithoutWritingSource \
-        "$scratch_root/manifest-bootstrap.log" manifest-bootstrap
-    cp "$lean_snapshot_original" "$lean_snapshot"
+	perl -0pi -e 's/bytes\["lake-manifest\.json"\] = manifest/bytes["lake-manifest.json"] = nil/' "${lean_snapshot}"
+	if cmp -s "${lean_snapshot}" "${lean_snapshot_original}"; then
+		echo "Lean manifest bootstrap mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed proofSnapshotBootstrapsMissingManifestWithoutWritingSource \
+		"${scratch_root}/manifest-bootstrap.log" manifest-bootstrap
+	cp "${lean_snapshot_original}" "${lean_snapshot}"
 }
 mutate_attachment_discard() {
-    perl -0pi -e 's/attachments: attachments, bytes: data/attachments: attachments.filter { _ in false }, bytes: data/' "$testing_stream"
-    if cmp -s "$testing_stream" "$testing_stream_original"
-    then
-        echo "attachment discard mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed swiftTestingAttachmentEventsRetainTypedPathAndActiveTestIdentity \
-        "$scratch_root/attachment-discard.log" attachment-discard
-    cp "$testing_stream_original" "$testing_stream"
+	perl -0pi -e 's/attachments: attachments, bytes: data/attachments: attachments.filter { _ in false }, bytes: data/' "${testing_stream}"
+	if cmp -s "${testing_stream}" "${testing_stream_original}"; then
+		echo "attachment discard mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed swiftTestingAttachmentEventsRetainTypedPathAndActiveTestIdentity \
+		"${scratch_root}/attachment-discard.log" attachment-discard
+	cp "${testing_stream_original}" "${testing_stream}"
 }
 mutate_swift_testing_locus() {
-    perl -0pi -e 's/try locus\.requireCompatible\(with: event\.kind\)/if runEnded { try locus.requireCompatible(with: event.kind) }/' "$testing_stream"
-    if cmp -s "$testing_stream" "$testing_stream_original"
-    then
-        echo "Swift Testing locus mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed swiftTestingScopedEventsRequireActiveCaseAndLegalEventLocus \
-        "$scratch_root/swift-testing-locus.log" swift-testing-locus
-    cp "$testing_stream_original" "$testing_stream"
+	perl -0pi -e 's/try locus\.requireCompatible\(with: event\.kind\)/if runEnded { try locus.requireCompatible(with: event.kind) }/' "${testing_stream}"
+	if cmp -s "${testing_stream}" "${testing_stream_original}"; then
+		echo "Swift Testing locus mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed swiftTestingScopedEventsRequireActiveCaseAndLegalEventLocus \
+		"${scratch_root}/swift-testing-locus.log" swift-testing-locus
+	cp "${testing_stream_original}" "${testing_stream}"
 }
 mutate_swift_package_denial() {
-    perl -0pi -e 's/(    static func observe\(\n.*?)(        case \.evidence\(_, \.denied\(let artifact\)\):\n.*?)(?=        case \.evidence\(let exitCode, \.complete\()/$1        case .evidence(_, .denied):\n            do {\n                return .passed(.zero, try Digest.sha256(Data()))\n            } catch {\n                return .notConfigured\n            }\n/s' "$target_observer"
-    if cmp -s "$target_observer" "$target_observer_original"
-    then
-        echo "Swift Package denial mutation was not applied"
-        exit 1
-    fi
-    require_semantic_mutant_killed swiftPackage \
-        "$scratch_root/swift-package-denial.log" swift-package-denial
-    cp "$target_observer_original" "$target_observer"
+	perl -0pi -e 's/(    static func observe\(\n.*?)(        case \.evidence\(_, \.denied\(let artifact\)\):\n.*?)(?=        case \.evidence\(let exitCode, \.complete\()/$1        case .evidence(_, .denied):\n            do {\n                return .passed(.zero, try Digest.sha256(Data()))\n            } catch {\n                return .notConfigured\n            }\n/s' "${target_observer}"
+	if cmp -s "${target_observer}" "${target_observer_original}"; then
+		echo "Swift Package denial mutation was not applied"
+		exit 1
+	fi
+	require_semantic_mutant_killed swiftPackage \
+		"${scratch_root}/swift-package-denial.log" swift-package-denial
+	cp "${target_observer_original}" "${target_observer}"
 }
 mutate_swift_package_receipt_forgery() {
-    perl -0pi -e 's/guard let receipt = SwiftPackageTargetObserver\.denialReceipt\(.*?\) else \{\n\s+return apparatus\(scenario, "[^"\n]*denial was accepted by target observer"\)\n\s+\}\n\s+denialReceipt = receipt\n//sg; s/return denialReceipt\.close\(activation: activation, observedOutcome: observedOutcome\)/return .handled([FaultActivationObservation(point: activation.id, result: .failedClosed)])/g' "$boundary_campaign"
-    if cmp -s "$boundary_campaign" "$boundary_campaign_original" \
-        || grep -Fq 'SwiftPackageTargetObserver.denialReceipt(' "$boundary_campaign" \
-        || ! grep -Fq 'return .handled([FaultActivationObservation(point: activation.id, result: .failedClosed)])' "$boundary_campaign"
-    then
-        echo "Swift Package receipt forgery mutation was not applied"
-        exit 1
-    fi
-    if swift run --disable-sandbox --disable-index-store -j 2 \
-        --package-path "$project_root" swiftest laws "$copy_root" >"$scratch_root/swift-package-receipt-forgery.log" 2>&1
-    then
-        echo "Swift Package receipt forgery survived laws"
-        exit 1
-    fi
-    if ! grep -Fq 'fault.observation-provenance' "$scratch_root/swift-package-receipt-forgery.log"
-    then
-        sed -n '1,200p' "$scratch_root/swift-package-receipt-forgery.log"
-        exit 1
-    fi
-    cp "$boundary_campaign_original" "$boundary_campaign"
+	perl -0pi -e 's/guard let receipt = SwiftPackageTargetObserver\.denialReceipt\(.*?\) else \{\n\s+return apparatus\(scenario, "[^"\n]*denial was accepted by target observer"\)\n\s+\}\n\s+denialReceipt = receipt\n//sg; s/return denialReceipt\.close\(activation: activation, observedOutcome: observedOutcome\)/return .handled([FaultActivationObservation(point: activation.id, result: .failedClosed)])/g' "${boundary_campaign}"
+	if cmp -s "${boundary_campaign}" "${boundary_campaign_original}" ||
+		grep -Fq 'SwiftPackageTargetObserver.denialReceipt(' "${boundary_campaign}" ||
+		! grep -Fq 'return .handled([FaultActivationObservation(point: activation.id, result: .failedClosed)])' "${boundary_campaign}"; then
+		echo "Swift Package receipt forgery mutation was not applied"
+		exit 1
+	fi
+	if swift run --disable-sandbox --disable-index-store -j 2 \
+		--package-path "${project_root}" swiftest laws "${copy_root}" >"${scratch_root}/swift-package-receipt-forgery.log" 2>&1; then
+		echo "Swift Package receipt forgery survived laws"
+		exit 1
+	fi
+	if ! grep -Fq 'fault.observation-provenance' "${scratch_root}/swift-package-receipt-forgery.log"; then
+		sed -n '1,200p' "${scratch_root}/swift-package-receipt-forgery.log"
+		exit 1
+	fi
+	cp "${boundary_campaign_original}" "${boundary_campaign}"
 }
-if test "$mutation_selection" = all
-then
-incremental_source="$copy_root/Sources/SwiftestFaults/FaultCampaign.swift"
-incremental_original="$scratch_root/incremental-original.swift"
-incremental_log="$scratch_root/incremental-build.log"
-cp "$incremental_source" "$incremental_original"
-mkdir -p "$copy_root/dist" "$copy_root/.local-signing"
-cp "$incremental_original" "$copy_root/dist/Generated.swift"
-cp "$incremental_original" "$copy_root/.local-signing/Generated.swift"
-perl -0pi -e 's/\A/\/\/ ignored-output\n/' "$copy_root/dist/Generated.swift" "$copy_root/.local-signing/Generated.swift"
-if ! swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-    --target SwiftestFaults >"$incremental_log" 2>&1
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
-fi
-perl -0pi -e 's/\A/\/\/ gate-probe\n/' "$incremental_source"
-if swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-    --target SwiftestFaults >"$incremental_log" 2>&1
-then
-    echo "incremental law gate survived a new violation"
-    exit 1
-fi
-if ! grep -Fq 'Sources/SwiftestFaults/FaultCampaign.swift:1:1: comment.forbidden' "$incremental_log"
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
-fi
-perl -0pi -e 's/\A\/\/ gate-probe\n//' "$incremental_source"
-if ! cmp -s "$incremental_source" "$incremental_original"
-then
-    echo "incremental law fixture was not restored"
-    exit 1
-fi
-echo "incremental-law-plugin-existing-source=passed"
+if test "${mutation_selection}" = all; then
+	incremental_source="${copy_root}/Sources/SwiftestFaults/FaultCampaign.swift"
+	incremental_original="${scratch_root}/incremental-original.swift"
+	incremental_log="${scratch_root}/incremental-build.log"
+	cp "${incremental_source}" "${incremental_original}"
+	mkdir -p "${copy_root}/dist" "${copy_root}/.local-signing"
+	cp "${incremental_original}" "${copy_root}/dist/Generated.swift"
+	cp "${incremental_original}" "${copy_root}/.local-signing/Generated.swift"
+	perl -0pi -e 's/\A/\/\/ ignored-output\n/' "${copy_root}/dist/Generated.swift" "${copy_root}/.local-signing/Generated.swift"
+	if ! swift build --disable-sandbox --disable-index-store -j 2 \
+		--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+		--target SwiftestFaults >"${incremental_log}" 2>&1; then
+		sed -n '1,200p' "${incremental_log}"
+		exit 1
+	fi
+	perl -0pi -e 's/\A/\/\/ gate-probe\n/' "${incremental_source}"
+	if swift build --disable-sandbox --disable-index-store -j 2 \
+		--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+		--target SwiftestFaults >"${incremental_log}" 2>&1; then
+		echo "incremental law gate survived a new violation"
+		exit 1
+	fi
+	if ! grep -Fq 'Sources/SwiftestFaults/FaultCampaign.swift:1:1: comment.forbidden' "${incremental_log}"; then
+		sed -n '1,200p' "${incremental_log}"
+		exit 1
+	fi
+	perl -0pi -e 's/\A\/\/ gate-probe\n//' "${incremental_source}"
+	if ! cmp -s "${incremental_source}" "${incremental_original}"; then
+		echo "incremental law fixture was not restored"
+		exit 1
+	fi
+	echo "incremental-law-plugin-existing-source=passed"
 fi
 killed=0
-for mutation in world_plan_handoff lean_quoted lean_raw lean_comment_raw comment try force semantic unsafe static_state root_path resource manifest_plugin manifest_language manifest_settings manifest_platforms manifest_products macro_alias testdouble_alias license missing_target symlink lean_constant vnode_clear_scanner catalog_missing_scanner catalog_review_scanner catalog_claim_nested_scanner catalog_nested_binding_scanner failure_payload_scanner world_definition_scanner epoch_observer_scanner epoch_verified_scanner epoch_path_scanner epoch_completion_scanner epoch_prepublication_scanner fault_provenance_scanner
-do
-    if test "$mutation_selection" != all && test "$mutation_selection" != "$mutation"
-    then
-        continue
-    fi
-    cp "$scanner_original" "$scanner"
-    cp "$manifest_graph_original" "$manifest_graph"
-    cp "$lean_trust_original" "$lean_trust"
-    cp "$other_source_lexer_original" "$other_source_lexer"
-    mutated_file="$scanner"
-    original_file="$scanner_original"
-    case "$mutation" in
-        world_plan_handoff)
-            perl -0pi -e 's/!worldSpacePlanHandoffIsDirect\(worldSpaceSource: worldSpaceSource\)/false/' "$scanner"
-            test_filter=worldSpaceIdentityAxesMatchModeledWorldDefinitions
-            ;;
-        fault_provenance_scanner)
-            perl -0pi -e 's/if path == swiftPackageCampaignPath \{/if false {/' "$scanner"
-            test_filter=swiftPackageFaultVerdictRequiresObserverReceipt
-            ;;
-        comment)
-            perl -0pi -e 's/\.forbiddenComment,/\.unreadableSource,/g' "$scanner"
-            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
-            ;;
-        try)
-            perl -0pi -e 's/\.prohibitedTry, token:/\.forceCast, token:/g' "$scanner"
-            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
-            ;;
-        force)
-            perl -0pi -e 's/\.forceUnwrap, token:/\.forceCast, token:/g' "$scanner"
-            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
-            ;;
-        semantic)
-            perl -0pi -e 's/\.semanticDefault, token:/\.optionalBoolean, token:/g' "$scanner"
-            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
-            ;;
-        unsafe)
-            perl -0pi -e 's/\.unsafeOutsideBoundary, token:/\.mirror, token:/g' "$scanner"
-            test_filter=syntacticLawFixturesDetectOnlyIllegalForms
-            ;;
-        static_state)
-            perl -0pi -e 's/token\.isFileScope \|\| token\.isTypeStaticVar/token.isFileScope/g' "$scanner"
-            test_filter=typeStaticMutableStateCannotBypassFileScopeRule
-            ;;
-        root_path)
-            perl -0pi -e 's/return allowedRootFiles\.contains\(path\)/return true/g' "$scanner"
-            test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
-            ;;
-        resource)
-            perl -0pi -e 's/return components\.count >= 3 && path\.hasSuffix\("\.swift"\)/return components.count >= 3/g' "$scanner"
-            test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
-            ;;
-        manifest_plugin)
-            mutated_file="$manifest_graph"
-            original_file="$manifest_graph_original"
-            perl -0pi -e 's/requiredPlugins\.subtracting\(target\.plugins\)/Set<String>()\.subtracting(target.plugins)/g' "$manifest_graph"
-            test_filter=packageManifestMustMatchTheTypedModuleGraph
-            ;;
-        manifest_language)
-            mutated_file="$manifest_graph"
-            original_file="$manifest_graph_original"
-            perl -0pi -e 's/languageModes\[0\] != normalizedTokens\("swiftLanguageModes: \[\.v6\]"\)/languageModes[0] != normalizedTokens("swiftLanguageModes: [.v6]") \&\& tokens.isEmpty/g' "$manifest_graph"
-            test_filter=packageManifestMustMatchTheTypedModuleGraph
-            ;;
-        manifest_settings)
-            mutated_file="$manifest_graph"
-            original_file="$manifest_graph_original"
-            perl -0pi -e 's/binding\(named: name, in: tokens\) != normalizedTokens\(expected\)/binding(named: name, in: tokens) != normalizedTokens(expected) \&\& tokens.isEmpty/g' "$manifest_graph"
-            test_filter=packageManifestMustMatchTheTypedModuleGraph
-            ;;
-        manifest_platforms)
-            mutated_file="$manifest_graph"
-            original_file="$manifest_graph_original"
-            perl -0pi -e 's/platforms\[0\] != normalizedTokens\(requiredPlatforms\)/platforms[0] != normalizedTokens(requiredPlatforms) \&\& tokens.isEmpty/g' "$manifest_graph"
-            test_filter=packageManifestMustMatchTheTypedModuleGraph
-            ;;
-        manifest_products)
-            mutated_file="$manifest_graph"
-            original_file="$manifest_graph_original"
-            perl -0pi -e 's/products\[0\] != normalizedTokens\(requiredProducts\)/products[0] != normalizedTokens(requiredProducts) \&\& tokens.isEmpty/g' "$manifest_graph"
-            test_filter=packageManifestMustMatchTheTypedModuleGraph
-            ;;
-        macro_alias)
-            perl -0pi -e 's/\("SwiftestMacros", "(WorldTestMacro|WorldUITestMacro|PropertyMacro|StateMachineTestMacro|PerformanceClaimMacro)"\)/("SwiftestMacros", "$1"), ("TestingMacros", "TestDeclarationMacro")/g' "$scanner"
-            test_filter=removedSwiftTestingAliasesCannotBeReintroduced
-            ;;
-        testdouble_alias)
-            perl -0pi -e 's/\("SwiftestMacros", "TestDoubleMacro"\)/("SwiftestMacros", "TestDoubleMacro"), ("TestingMacros", "PragmaMacro")/g' "$scanner"
-            test_filter=removedSwiftTestingAliasesCannotBeReintroduced
-            ;;
-        license)
-            perl -0pi -e 's/location\.line == 1 && source\.hasPrefix\(text\)/location.line <= 5/g' "$scanner"
-            test_filter=licenseAndToolDirectivesAreOnlyAllowedAsExactHeaders
-            ;;
-        missing_target)
-            perl -0pi -e 's/violations\.append\(violation\(\.unclassifiedTarget, file: relative, subject: "missing-target"\)\)/violations.append(contentsOf: [])/g' "$scanner"
-            test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
-            ;;
-        symlink)
-            perl -0pi -e 's/inventory\.violations\.append\(violation\(\.unreadableSource, file: relative, subject: kind\.rawValue\)\)/inventory.paths.append(path)/g' "$scanner"
-            test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
-            ;;
-        lean_constant)
-            mutated_file="$lean_trust"
-            original_file="$lean_trust_original"
-            perl -0pi -e 's/"constant", //' "$lean_trust"
-            test_filter=leanTrustLexerRejectsEveryStandaloneProofHole
-            ;;
-        lean_quoted)
-            mutated_file="$lean_trust"
-            original_file="$lean_trust_original"
-            perl -0pi -e 's/throw \.quotedIdentifier\(location\(path: path, bytes: bytes, offset: start\)\)/if start == bytes.count { throw .quotedIdentifier(location(path: path, bytes: bytes, offset: start)) }; continue/' "$lean_trust"
-            test_filter=leanTrustRejectsQuotedIdentifierProofHole
-            ;;
-        lean_raw)
-            mutated_file="$lean_trust"
-            original_file="$lean_trust_original"
-            perl -0pi -e 's/if LeanRawStringStart\.matches\(bytes, at: index\)/if false \&\& LeanRawStringStart.matches(bytes, at: index)/' "$lean_trust"
-            test_filter=leanTrustRejectsRawStringBeforeItCanHideAnAxiom
-            ;;
-        lean_comment_raw)
-            mutated_file="$other_source_lexer"
-            original_file="$other_source_lexer_original"
-            perl -0pi -e 's/if LeanRawStringStart\.matches\(bytes, at: index\)/if false \&\& LeanRawStringStart.matches(bytes, at: index)/' "$other_source_lexer"
-            test_filter=leanCommentScannerRejectsRawStringBeforeItCanHideAComment
-            ;;
-        vnode_clear_scanner)
-            perl -0pi -e 's/codeTokens\(flags\.expression\) == \[\n\s+"UInt16", "\(", "EV_ADD", "\|", "EV_ENABLE", "\|", "EV_CLEAR", "\)",\n\s+\]/codeTokens(flags.expression).contains("EV_ADD")/g' "$scanner"
-            test_filter=vnodeEventRegistrationHasOneClearingABIConstructor
-            ;;
-        catalog_missing_scanner)
-            perl -0pi -e 's/for missing in properties\.subtracting\(serialized\)\.sorted\(\)/for missing in Set<String>().subtracting(serialized).sorted()/g' "$scanner"
-            test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
-            ;;
-        catalog_review_scanner)
-            perl -0pi -e 's/for missing in properties\.subtracting\(names\)\.sorted\(\)/for missing in Set<String>().subtracting(names).sorted()/g' "$scanner"
-            test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
-            ;;
-        catalog_claim_nested_scanner)
-            perl -0pi -e 's/for missing in properties\.subtracting\(names\)\.sorted\(\) \{/for missing in properties.subtracting(names).sorted() where prefix != "preservationClaims" \&\& prefix != "detectionClaims" {/' "$scanner"
-            test_filter=claimDefinitionSerializationRequiresBoundIDAndName
-            ;;
-        catalog_nested_binding_scanner)
-            perl -0pi -e 's/(memberPaths\(in: Syntax\(field\.value\), rootedAt: root, depth: depth\) != Set\(\[expected\]\))/$1 \&\& false/g' "$scanner"
-            test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
-            ;;
-        failure_payload_scanner)
-            perl -0pi -e 's/if serialized\.contains\("failures"\) \&\& !failureValueIsDirectlyBound\(/if serialized.contains("failures") \&\& false \&\& !failureValueIsDirectlyBound(/' "$scanner"
-            test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
-            ;;
-        world_definition_scanner)
-            perl -0pi -e 's/!worldValueIsDirectlyBound\(modelSource: modelSource, reportSource: reportSource\)/false/' "$scanner"
-            test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
-            ;;
-        epoch_observer_scanner)
-            perl -0pi -e 's/codeTokens\(attribute\) == attributeBranch/codeTokens(attribute) == attributeBranch || attributeBranch.contains("if")/g' "$scanner"
-            test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
-            ;;
-        epoch_verified_scanner)
-            perl -0pi -e 's/codeTokens\(healthSwitch\.subject\) == \[\n\s+"health"[^\n]*\n\s+\],/codeTokens(healthSwitch.subject).contains("health"),/g' "$scanner"
-            test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
-            ;;
-        epoch_path_scanner)
-            perl -0pi -e 's/codeTokens\(healthAdvanceStatements\[2\]\) == \[\n\s+"if"[^\n]*\n\s+"else"[^\n]*\n\s+\],/codeTokens(healthAdvanceStatements[2]).contains("firstAttributePath"),/g' "$scanner"
-            test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
-            ;;
-        epoch_completion_scanner)
-            perl -0pi -e 's/codeTokens\(completionActiveStatements\[0\]\) == \[\n\s+"state"[^\n]*\n\s+\],/true,/g' "$scanner"
-            test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
-            ;;
-        epoch_prepublication_scanner)
-            perl -0pi -e 's/codeTokens\(closureStatements\[2\]\) == comparesFullWitness/codeTokens(closureStatements[2]) == comparesFullWitness || !comparesFullWitness.isEmpty/g' "$scanner"
-            test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
-            ;;
-    esac
-    if cmp -s "$original_file" "$mutated_file"
-    then
-        echo "$mutation was not applied"
-        exit 1
-    fi
-    log_path="$scratch_root/$mutation.log"
-    if swift test --disable-sandbox --disable-index-store -j 2 --package-path "$copy_root" --scratch-path "$scratch_root/build" --filter "$test_filter" >"$log_path" 2>&1
-    then
-        echo "$mutation survived"
-        exit 1
-    else
-        mutant_exit_status=$?
-    fi
-    require_mutant_test_failure "$mutant_exit_status" "$log_path" "$mutation"
-    killed=$((killed + 1))
-    if test "$mutation" = manifest_products
-    then
-        discard_mutation_build
-    fi
+for mutation in world_plan_handoff lean_quoted lean_raw lean_comment_raw comment try force semantic unsafe static_state root_path resource manifest_plugin manifest_language manifest_settings manifest_platforms manifest_products macro_alias testdouble_alias license missing_target symlink lean_constant vnode_clear_scanner catalog_missing_scanner catalog_review_scanner catalog_claim_nested_scanner catalog_nested_binding_scanner failure_payload_scanner world_definition_scanner epoch_observer_scanner epoch_verified_scanner epoch_path_scanner epoch_completion_scanner epoch_prepublication_scanner fault_provenance_scanner; do
+	if test "${mutation_selection}" != all && test "${mutation_selection}" != "${mutation}"; then
+		continue
+	fi
+	cp "${scanner_original}" "${scanner}"
+	cp "${manifest_graph_original}" "${manifest_graph}"
+	cp "${lean_trust_original}" "${lean_trust}"
+	cp "${other_source_lexer_original}" "${other_source_lexer}"
+	mutated_file="${scanner}"
+	original_file="${scanner_original}"
+	case "${mutation}" in
+	world_plan_handoff)
+		perl -0pi -e 's/!worldSpacePlanHandoffIsDirect\(worldSpaceSource: worldSpaceSource\)/false/' "${scanner}"
+		test_filter=worldSpaceIdentityAxesMatchModeledWorldDefinitions
+		;;
+	fault_provenance_scanner)
+		perl -0pi -e 's/if path == swiftPackageCampaignPath \{/if false {/' "${scanner}"
+		test_filter=swiftPackageFaultVerdictRequiresObserverReceipt
+		;;
+	comment)
+		perl -0pi -e 's/\.forbiddenComment,/\.unreadableSource,/g' "${scanner}"
+		test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+		;;
+	try)
+		perl -0pi -e 's/\.prohibitedTry, token:/\.forceCast, token:/g' "${scanner}"
+		test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+		;;
+	force)
+		perl -0pi -e 's/\.forceUnwrap, token:/\.forceCast, token:/g' "${scanner}"
+		test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+		;;
+	semantic)
+		perl -0pi -e 's/\.semanticDefault, token:/\.optionalBoolean, token:/g' "${scanner}"
+		test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+		;;
+	unsafe)
+		perl -0pi -e 's/\.unsafeOutsideBoundary, token:/\.mirror, token:/g' "${scanner}"
+		test_filter=syntacticLawFixturesDetectOnlyIllegalForms
+		;;
+	static_state)
+		perl -0pi -e 's/token\.isFileScope \|\| token\.isTypeStaticVar/token.isFileScope/g' "${scanner}"
+		test_filter=typeStaticMutableStateCannotBypassFileScopeRule
+		;;
+	root_path)
+		perl -0pi -e 's/return allowedRootFiles\.contains\(path\)/return true/g' "${scanner}"
+		test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
+		;;
+	resource)
+		perl -0pi -e 's/return components\.count >= 3 && path\.hasSuffix\("\.swift"\)/return components.count >= 3/g' "${scanner}"
+		test_filter=scannerRejectsOutputArtifactsEvenWithRecognizedExtensions
+		;;
+	manifest_plugin)
+		mutated_file="${manifest_graph}"
+		original_file="${manifest_graph_original}"
+		perl -0pi -e 's/requiredPlugins\.subtracting\(target\.plugins\)/Set<String>()\.subtracting(target.plugins)/g' "${manifest_graph}"
+		test_filter=packageManifestMustMatchTheTypedModuleGraph
+		;;
+	manifest_language)
+		mutated_file="${manifest_graph}"
+		original_file="${manifest_graph_original}"
+		perl -0pi -e 's/languageModes\[0\] != normalizedTokens\("swiftLanguageModes: \[\.v6\]"\)/languageModes[0] != normalizedTokens("swiftLanguageModes: [.v6]") \&\& tokens.isEmpty/g' "${manifest_graph}"
+		test_filter=packageManifestMustMatchTheTypedModuleGraph
+		;;
+	manifest_settings)
+		mutated_file="${manifest_graph}"
+		original_file="${manifest_graph_original}"
+		perl -0pi -e 's/binding\(named: name, in: tokens\) != normalizedTokens\(expected\)/binding(named: name, in: tokens) != normalizedTokens(expected) \&\& tokens.isEmpty/g' "${manifest_graph}"
+		test_filter=packageManifestMustMatchTheTypedModuleGraph
+		;;
+	manifest_platforms)
+		mutated_file="${manifest_graph}"
+		original_file="${manifest_graph_original}"
+		perl -0pi -e 's/platforms\[0\] != normalizedTokens\(requiredPlatforms\)/platforms[0] != normalizedTokens(requiredPlatforms) \&\& tokens.isEmpty/g' "${manifest_graph}"
+		test_filter=packageManifestMustMatchTheTypedModuleGraph
+		;;
+	manifest_products)
+		mutated_file="${manifest_graph}"
+		original_file="${manifest_graph_original}"
+		perl -0pi -e 's/products\[0\] != normalizedTokens\(requiredProducts\)/products[0] != normalizedTokens(requiredProducts) \&\& tokens.isEmpty/g' "${manifest_graph}"
+		test_filter=packageManifestMustMatchTheTypedModuleGraph
+		;;
+	macro_alias)
+		perl -0pi -e 's/\("SwiftestMacros", "(WorldTestMacro|WorldUITestMacro|PropertyMacro|StateMachineTestMacro|PerformanceClaimMacro)"\)/("SwiftestMacros", "$1"), ("TestingMacros", "TestDeclarationMacro")/g' "${scanner}"
+		test_filter=removedSwiftTestingAliasesCannotBeReintroduced
+		;;
+	testdouble_alias)
+		perl -0pi -e 's/\("SwiftestMacros", "TestDoubleMacro"\)/("SwiftestMacros", "TestDoubleMacro"), ("TestingMacros", "PragmaMacro")/g' "${scanner}"
+		test_filter=removedSwiftTestingAliasesCannotBeReintroduced
+		;;
+	license)
+		perl -0pi -e 's/location\.line == 1 && source\.hasPrefix\(text\)/location.line <= 5/g' "${scanner}"
+		test_filter=licenseAndToolDirectivesAreOnlyAllowedAsExactHeaders
+		;;
+	missing_target)
+		perl -0pi -e 's/violations\.append\(violation\(\.unclassifiedTarget, file: relative, subject: "missing-target"\)\)/violations.append(contentsOf: [])/g' "${scanner}"
+		test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
+		;;
+	symlink)
+		perl -0pi -e 's/inventory\.violations\.append\(violation\(\.unreadableSource, file: relative, subject: kind\.rawValue\)\)/inventory.paths.append(path)/g' "${scanner}"
+		test_filter=scannerRejectsMarkdownUnknownFilesInvalidUTF8AndSymlinks
+		;;
+	lean_constant)
+		mutated_file="${lean_trust}"
+		original_file="${lean_trust_original}"
+		perl -0pi -e 's/"constant", //' "${lean_trust}"
+		test_filter=leanTrustLexerRejectsEveryStandaloneProofHole
+		;;
+	lean_quoted)
+		mutated_file="${lean_trust}"
+		original_file="${lean_trust_original}"
+		perl -0pi -e 's/throw \.quotedIdentifier\(location\(path: path, bytes: bytes, offset: start\)\)/if start == bytes.count { throw .quotedIdentifier(location(path: path, bytes: bytes, offset: start)) }; continue/' "${lean_trust}"
+		test_filter=leanTrustRejectsQuotedIdentifierProofHole
+		;;
+	lean_raw)
+		mutated_file="${lean_trust}"
+		original_file="${lean_trust_original}"
+		perl -0pi -e 's/if LeanRawStringStart\.matches\(bytes, at: index\)/if false \&\& LeanRawStringStart.matches(bytes, at: index)/' "${lean_trust}"
+		test_filter=leanTrustRejectsRawStringBeforeItCanHideAnAxiom
+		;;
+	lean_comment_raw)
+		mutated_file="${other_source_lexer}"
+		original_file="${other_source_lexer_original}"
+		perl -0pi -e 's/if LeanRawStringStart\.matches\(bytes, at: index\)/if false \&\& LeanRawStringStart.matches(bytes, at: index)/' "${other_source_lexer}"
+		test_filter=leanCommentScannerRejectsRawStringBeforeItCanHideAComment
+		;;
+	vnode_clear_scanner)
+		perl -0pi -e 's/codeTokens\(flags\.expression\) == \[\n\s+"UInt16", "\(", "EV_ADD", "\|", "EV_ENABLE", "\|", "EV_CLEAR", "\)",\n\s+\]/codeTokens(flags.expression).contains("EV_ADD")/g' "${scanner}"
+		test_filter=vnodeEventRegistrationHasOneClearingABIConstructor
+		;;
+	catalog_missing_scanner)
+		perl -0pi -e 's/for missing in properties\.subtracting\(serialized\)\.sorted\(\)/for missing in Set<String>().subtracting(serialized).sorted()/g' "${scanner}"
+		test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
+		;;
+	catalog_review_scanner)
+		perl -0pi -e 's/for missing in properties\.subtracting\(names\)\.sorted\(\)/for missing in Set<String>().subtracting(names).sorted()/g' "${scanner}"
+		test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
+		;;
+	catalog_claim_nested_scanner)
+		perl -0pi -e 's/for missing in properties\.subtracting\(names\)\.sorted\(\) \{/for missing in properties.subtracting(names).sorted() where prefix != "preservationClaims" \&\& prefix != "detectionClaims" {/' "${scanner}"
+		test_filter=claimDefinitionSerializationRequiresBoundIDAndName
+		;;
+	catalog_nested_binding_scanner)
+		perl -0pi -e 's/(memberPaths\(in: Syntax\(field\.value\), rootedAt: root, depth: depth\) != Set\(\[expected\]\))/$1 \&\& false/g' "${scanner}"
+		test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
+		;;
+	failure_payload_scanner)
+		perl -0pi -e 's/if serialized\.contains\("failures"\) \&\& !failureValueIsDirectlyBound\(/if serialized.contains("failures") \&\& false \&\& !failureValueIsDirectlyBound(/' "${scanner}"
+		test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
+		;;
+	world_definition_scanner)
+		perl -0pi -e 's/!worldValueIsDirectlyBound\(modelSource: modelSource, reportSource: reportSource\)/false/' "${scanner}"
+		test_filter=catalogSerializationBindsEveryStoredPropertyToItsOwnCanonicalField
+		;;
+	epoch_observer_scanner)
+		perl -0pi -e 's/codeTokens\(attribute\) == attributeBranch/codeTokens(attribute) == attributeBranch || attributeBranch.contains("if")/g' "${scanner}"
+		test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
+		;;
+	epoch_verified_scanner)
+		perl -0pi -e 's/codeTokens\(healthSwitch\.subject\) == \[\n\s+"health"[^\n]*\n\s+\],/codeTokens(healthSwitch.subject).contains("health"),/g' "${scanner}"
+		test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
+		;;
+	epoch_path_scanner)
+		perl -0pi -e 's/codeTokens\(healthAdvanceStatements\[2\]\) == \[\n\s+"if"[^\n]*\n\s+"else"[^\n]*\n\s+\],/codeTokens(healthAdvanceStatements[2]).contains("firstAttributePath"),/g' "${scanner}"
+		test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
+		;;
+	epoch_completion_scanner)
+		perl -0pi -e 's/codeTokens\(completionActiveStatements\[0\]\) == \[\n\s+"state"[^\n]*\n\s+\],/true,/g' "${scanner}"
+		test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
+		;;
+	epoch_prepublication_scanner)
+		perl -0pi -e 's/codeTokens\(closureStatements\[2\]\) == comparesFullWitness/codeTokens(closureStatements[2]) == comparesFullWitness || !comparesFullWitness.isEmpty/g' "${scanner}"
+		test_filter=eventGenerationWitnessLawBindsObservationPersistenceAndAdvance
+		;;
+	*)
+		echo "unknown mutation: ${mutation}" >&2
+		exit 2
+		;;
+	esac
+	if cmp -s "${original_file}" "${mutated_file}"; then
+		echo "${mutation} was not applied"
+		exit 1
+	fi
+	log_path="${scratch_root}/${mutation}.log"
+	if swift test --disable-sandbox --disable-index-store -j 2 --package-path "${copy_root}" --scratch-path "${scratch_root}/build" --filter "${test_filter}" >"${log_path}" 2>&1; then
+		echo "${mutation} survived"
+		exit 1
+	else
+		mutant_exit_status=$?
+	fi
+	require_mutant_test_failure "${mutant_exit_status}" "${log_path}" "${mutation}"
+	killed=$((killed + 1))
+	if test "${mutation}" = manifest_products; then
+		discard_mutation_build
+	fi
 done
-if test "$mutation_selection" = world_cursor_oracle
-then
-    mutate_world_cursor_oracle
-    echo "law-mutation-targeted=passed mutation=world_cursor_oracle"
-    exit 0
+if test "${mutation_selection}" = world_cursor_oracle; then
+	mutate_world_cursor_oracle
+	echo "law-mutation-targeted=passed mutation=world_cursor_oracle"
+	exit 0
 fi
-if test "$mutation_selection" = world_definition_preimage
-then
-    mutate_world_definition_preimage
-    echo "law-mutation-targeted=passed mutation=world_definition_preimage"
-    exit 0
+if test "${mutation_selection}" = world_definition_preimage; then
+	mutate_world_definition_preimage
+	echo "law-mutation-targeted=passed mutation=world_definition_preimage"
+	exit 0
 fi
-if test "$mutation_selection" = manifest_bootstrap
-then
-    mutate_manifest_bootstrap
-    echo "law-mutation-targeted=passed mutation=manifest_bootstrap"
-    exit 0
+if test "${mutation_selection}" = manifest_bootstrap; then
+	mutate_manifest_bootstrap
+	echo "law-mutation-targeted=passed mutation=manifest_bootstrap"
+	exit 0
 fi
-if test "$mutation_selection" = attachment_discard
-then
-    mutate_attachment_discard
-    echo "law-mutation-targeted=passed mutation=attachment_discard"
-    exit 0
+if test "${mutation_selection}" = attachment_discard; then
+	mutate_attachment_discard
+	echo "law-mutation-targeted=passed mutation=attachment_discard"
+	exit 0
 fi
-if test "$mutation_selection" = swift_testing_locus
-then
-    mutate_swift_testing_locus
-    echo "law-mutation-targeted=passed mutation=swift_testing_locus"
-    exit 0
+if test "${mutation_selection}" = swift_testing_locus; then
+	mutate_swift_testing_locus
+	echo "law-mutation-targeted=passed mutation=swift_testing_locus"
+	exit 0
 fi
-if test "$mutation_selection" = swift_package_denial
-then
-    mutate_swift_package_denial
-    echo "law-mutation-targeted=passed mutation=swift_package_denial"
-    exit 0
+if test "${mutation_selection}" = swift_package_denial; then
+	mutate_swift_package_denial
+	echo "law-mutation-targeted=passed mutation=swift_package_denial"
+	exit 0
 fi
-if test "$mutation_selection" = swift_package_receipt_forgery
-then
-    mutate_swift_package_receipt_forgery
-    echo "law-mutation-targeted=passed mutation=swift_package_receipt_forgery"
-    exit 0
+if test "${mutation_selection}" = swift_package_receipt_forgery; then
+	mutate_swift_package_receipt_forgery
+	echo "law-mutation-targeted=passed mutation=swift_package_receipt_forgery"
+	exit 0
 fi
-if test "$mutation_selection" != all
-then
-    if test "$killed" -ne 1
-    then
-        echo "$mutation_selection was not verified"
-        exit 1
-    fi
-    echo "law-mutation-targeted=passed mutation=$mutation_selection"
-    exit 0
+if test "${mutation_selection}" != all; then
+	if test "${killed}" -ne 1; then
+		echo "${mutation_selection} was not verified"
+		exit 1
+	fi
+	echo "law-mutation-targeted=passed mutation=${mutation_selection}"
+	exit 0
 fi
-echo "law-mutations=passed killed=$killed"
-cp "$scanner_original" "$scanner"
-cp "$manifest_graph_original" "$manifest_graph"
-cp "$lean_trust_original" "$lean_trust"
-cp "$other_source_lexer_original" "$other_source_lexer"
-audit_kernel="$copy_root/Sources/SwiftestModel/Evidence.swift"
-audit_kernel_original="$scratch_root/Evidence.swift"
-cp "$audit_kernel" "$audit_kernel_original"
-perl -0pi -e 's/preservationClaims\.contains\(claim\), worlds\.contains\(world\)/preservationClaims.contains(claim) || worlds.contains(world), worlds.contains(world)/' "$audit_kernel"
-if cmp -s "$audit_kernel" "$audit_kernel_original"
-then
-    echo "audit reference mutation was not applied"
-    exit 1
+echo "law-mutations=passed killed=${killed}"
+cp "${scanner_original}" "${scanner}"
+cp "${manifest_graph_original}" "${manifest_graph}"
+cp "${lean_trust_original}" "${lean_trust}"
+cp "${other_source_lexer_original}" "${other_source_lexer}"
+audit_kernel="${copy_root}/Sources/SwiftestModel/Evidence.swift"
+audit_kernel_original="${scratch_root}/Evidence.swift"
+cp "${audit_kernel}" "${audit_kernel_original}"
+perl -0pi -e 's/preservationClaims\.contains\(claim\), worlds\.contains\(world\)/preservationClaims.contains(claim) || worlds.contains(world), worlds.contains(world)/' "${audit_kernel}"
+if cmp -s "${audit_kernel}" "${audit_kernel_original}"; then
+	echo "audit reference mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed auditRejectsFailureReferencesOutsideDeclaredDomains \
-    "$scratch_root/audit-reference.log" audit-reference
-cp "$audit_kernel_original" "$audit_kernel"
+	"${scratch_root}/audit-reference.log" audit-reference
+cp "${audit_kernel_original}" "${audit_kernel}"
 echo "audit-reference-mutation=passed"
-perl -0pi -e 's/\$0\.isSuccessful \? \.passed : \.failed/\$0.detected == .passed ? .passed : .failed/' "$score_source"
-if cmp -s "$score_source" "$score_source_original"
-then
-    echo "mutation score success mutation was not applied"
-    exit 1
+perl -0pi -e 's/\$0\.isSuccessful \? \.passed : \.failed/\$0.detected == .passed ? .passed : .failed/' "${score_source}"
+if cmp -s "${score_source}" "${score_source_original}"; then
+	echo "mutation score success mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed mutationScoreRequiresReachInfectionAndDetection \
-    "$scratch_root/mutation-score-success.log" mutation-score-success
-cp "$score_source_original" "$score_source"
+	"${scratch_root}/mutation-score-success.log" mutation-score-success
+cp "${score_source_original}" "${score_source}"
 echo "mutation-score-success-mutation=passed"
-perl -0pi -e 's/"code": \.string\(diagnostic\.code\.rawValue\)/"code": .string("law-violated")/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "diagnostic code mutation was not applied"
-    exit 1
+perl -0pi -e 's/"code": \.string\(diagnostic\.code\.rawValue\)/"code": .string("law-violated")/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "diagnostic code mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed catalogDigestBindsNestedLawDiagnostic \
-    "$scratch_root/diagnostic-code.log" diagnostic-code
-cp "$catalog_serializer_original" "$catalog_serializer"
+	"${scratch_root}/diagnostic-code.log" diagnostic-code
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "diagnostic-code-mutation=passed"
-perl -0pi -e 's/stride \/= values\.count/stride \/= 1/' "$world_space"
-perl -0pi -e 's/violations\.isEmpty && !worldSpaceCursorKernelIsDirect/violations.isEmpty \&\& false \&\& !worldSpaceCursorKernelIsDirect/' "$scanner"
-if cmp -s "$world_space" "$world_space_original" || cmp -s "$scanner" "$scanner_original"
-then
-    echo "world cursor semantic mutation was not applied"
-    exit 1
+perl -0pi -e 's/stride \/= values\.count/stride \/= 1/' "${world_space}"
+perl -0pi -e 's/violations\.isEmpty && !worldSpaceCursorKernelIsDirect/violations.isEmpty \&\& false \&\& !worldSpaceCursorKernelIsDirect/' "${scanner}"
+if cmp -s "${world_space}" "${world_space_original}" || cmp -s "${scanner}" "${scanner_original}"; then
+	echo "world cursor semantic mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed worldSpaceCursorEnumeratesUnequalAxesAndMutantPairs \
-    "$scratch_root/world-cursor-semantic.log" world-cursor-semantic
-cp "$world_space_original" "$world_space"
-cp "$scanner_original" "$scanner"
+	"${scratch_root}/world-cursor-semantic.log" world-cursor-semantic
+cp "${world_space_original}" "${world_space}"
+cp "${scanner_original}" "${scanner}"
 echo "world-cursor-semantic-mutation=passed"
 mutate_world_cursor_oracle
 echo "world-cursor-oracle-mutation=passed"
@@ -551,373 +562,309 @@ mutate_swift_package_denial
 echo "swift-package-denial-mutation=passed"
 mutate_swift_package_receipt_forgery
 echo "swift-package-receipt-forgery-mutation=passed"
-perl -0pi -e 's/if multiplication\.overflow \{/if false {/' "$world_space"
-if cmp -s "$world_space" "$world_space_original"
-then
-    echo "world count overflow mutation was not applied"
-    exit 1
+perl -0pi -e 's/if multiplication\.overflow \{/if false {/' "${world_space}"
+if cmp -s "${world_space}" "${world_space_original}"; then
+	echo "world count overflow mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed worldSpaceRejectsCartesianProductOverflow \
-    "$scratch_root/world-count-overflow.log" world-count-overflow
-cp "$world_space_original" "$world_space"
+	"${scratch_root}/world-count-overflow.log" world-count-overflow
+cp "${world_space_original}" "${world_space}"
 echo "world-count-overflow-mutation=passed"
-perl -0pi -e 's/ExclusiveOutputOwner\(absolutePath: path\)/ExclusiveOutputOwner(absolutePath: path + ".unused")/' "$boundary_campaign"
-if cmp -s "$boundary_campaign" "$boundary_campaign_original"
-then
-    echo "preexisting evidence guard mutation was not applied"
-    exit 1
+perl -0pi -e 's/ExclusiveOutputOwner\(absolutePath: path\)/ExclusiveOutputOwner(absolutePath: path + ".unused")/' "${boundary_campaign}"
+if cmp -s "${boundary_campaign}" "${boundary_campaign_original}"; then
+	echo "preexisting evidence guard mutation was not applied"
+	exit 1
 fi
 require_semantic_mutant_killed swiftPackageFaultCampaignRejectsPreexistingResultsFromNoOpProcess \
-    "$scratch_root/preexisting-evidence.log" preexisting-evidence
-cp "$boundary_campaign_original" "$boundary_campaign"
+	"${scratch_root}/preexisting-evidence.log" preexisting-evidence
+cp "${boundary_campaign_original}" "${boundary_campaign}"
 echo "preexisting-evidence-mutation=passed"
 discard_mutation_build
-cp "$scanner_original" "$scanner"
-cp "$manifest_graph_original" "$manifest_graph"
-cp "$lean_trust_original" "$lean_trust"
+cp "${scanner_original}" "${scanner}"
+cp "${manifest_graph_original}" "${manifest_graph}"
+cp "${lean_trust_original}" "${lean_trust}"
 if ! swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/clean-build" \
-    --product swiftest >"$incremental_log" 2>&1
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+	--package-path "${copy_root}" --scratch-path "${scratch_root}/clean-build" \
+	--product swiftest >"${incremental_log}" 2>&1; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-vnode_bin_dir=$(swift build --package-path "$copy_root" \
-    --scratch-path "$scratch_root/clean-build" --show-bin-path)
+vnode_bin_dir=$(swift build --package-path "${copy_root}" \
+	--scratch-path "${scratch_root}/clean-build" --show-bin-path)
 require_cli_law_failure() {
-    law_log=$1
-    law_expected=$2
-    if "$vnode_bin_dir/swiftest" laws "$copy_root" >"$law_log" 2>&1
-    then
-        echo "$law_expected mutation survived CLI Law gate"
-        exit 1
-    fi
-    if ! grep -Fq "$law_expected" "$law_log"
-    then
-        sed -n '1,200p' "$law_log"
-        exit 1
-    fi
+	law_log=$1
+	law_expected=$2
+	if "${vnode_bin_dir}/swiftest" laws "${copy_root}" >"${law_log}" 2>&1; then
+		echo "${law_expected} mutation survived CLI Law gate"
+		exit 1
+	fi
+	if ! grep -Fq "${law_expected}" "${law_log}"; then
+		sed -n '1,200p' "${law_log}"
+		exit 1
+	fi
 }
-perl -0pi -e 's/EV_ADD \| EV_ENABLE \| EV_CLEAR/EV_ADD | EV_ENABLE/' "$vnode_adapter"
-if cmp -s "$vnode_adapter" "$vnode_adapter_original"
-then
-    echo "vnode clear mutation was not applied"
-    exit 1
+perl -0pi -e 's/EV_ADD \| EV_ENABLE \| EV_CLEAR/EV_ADD | EV_ENABLE/' "${vnode_adapter}"
+if cmp -s "${vnode_adapter}" "${vnode_adapter_original}"; then
+	echo "vnode clear mutation was not applied"
+	exit 1
 fi
-vnode_log="$scratch_root/vnode-clear.log"
-require_cli_law_failure "$vnode_log" 'adapter.vnode-event-protocol'
-cp "$vnode_adapter_original" "$vnode_adapter"
-if ! cmp -s "$vnode_adapter" "$vnode_adapter_original"
-then
-    echo "vnode registration was not restored"
-    exit 1
+vnode_log="${scratch_root}/vnode-clear.log"
+require_cli_law_failure "${vnode_log}" 'adapter.vnode-event-protocol'
+cp "${vnode_adapter_original}" "${vnode_adapter}"
+if ! cmp -s "${vnode_adapter}" "${vnode_adapter_original}"; then
+	echo "vnode registration was not restored"
+	exit 1
 fi
 echo "vnode-clear-law-mutation=passed"
-perl -0pi -e 's/            "inputContinuity": \.string\(catalog\.inputContinuity\.rawValue\),\n//' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "catalog omission mutation was not applied"
-    exit 1
+perl -0pi -e 's/            "inputContinuity": \.string\(catalog\.inputContinuity\.rawValue\),\n//' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "catalog omission mutation was not applied"
+	exit 1
 fi
-catalog_log="$scratch_root/catalog-omission.log"
-require_cli_law_failure "$catalog_log" 'report.catalog-serialization: missing:inputContinuity'
-cp "$catalog_serializer_original" "$catalog_serializer"
-if ! cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "catalog serializer was not restored"
-    exit 1
+catalog_log="${scratch_root}/catalog-omission.log"
+require_cli_law_failure "${catalog_log}" 'report.catalog-serialization: missing:inputContinuity'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
+if ! cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "catalog serializer was not restored"
+	exit 1
 fi
 echo "catalog-omission-law-mutation=passed"
-perl -0pi -e 's/"run": \.string\(catalog\.run\.rawValue\)/"run": .string(catalog.run.rawValue.isEmpty ? "fixed" : "fixed")/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "catalog inert-reference mutation was not applied"
-    exit 1
+perl -0pi -e 's/"run": \.string\(catalog\.run\.rawValue\)/"run": .string(catalog.run.rawValue.isEmpty ? "fixed" : "fixed")/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "catalog inert-reference mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/catalog-inert-reference.log" 'report.catalog-serialization: transformation:run'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/catalog-inert-reference.log" 'report.catalog-serialization: transformation:run'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "catalog-inert-reference-law-mutation=passed"
-perl -0pi -e 's/"name": \.string\(claim\.name\)/"name": .string("fixed")/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "claim definition mutation was not applied"
-    exit 1
+perl -0pi -e 's/"name": \.string\(claim\.name\)/"name": .string("fixed")/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "claim definition mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/claim-definition.log" 'report.catalog-serialization: preservationClaims-binding:name'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/claim-definition.log" 'report.catalog-serialization: preservationClaims-binding:name'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "claim-definition-law-mutation=passed"
-perl -0pi -e 's/                "serviceFault": \.string\(world\.serviceFault\.rawValue\),\n//' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "world definition mutation was not applied"
-    exit 1
+perl -0pi -e 's/                "serviceFault": \.string\(world\.serviceFault\.rawValue\),\n//' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "world definition mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/world-definition.log" 'report.catalog-serialization: world-definition'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/world-definition.log" 'report.catalog-serialization: world-definition'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "world-definition-law-mutation=passed"
-perl -0pi -e 's/appendRawAxis\("build", builds\)/appendRawAxis("build", locales)/' "$world_space"
-if cmp -s "$world_space" "$world_space_original"
-then
-    echo "world identity axis mutation was not applied"
-    exit 1
+perl -0pi -e 's/appendRawAxis\("build", builds\)/appendRawAxis("build", locales)/' "${world_space}"
+if cmp -s "${world_space}" "${world_space_original}"; then
+	echo "world identity axis mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/world-axis.log" 'report.catalog-serialization: world-space-axis-binding:build'
-cp "$world_space_original" "$world_space"
+require_cli_law_failure "${scratch_root}/world-axis.log" 'report.catalog-serialization: world-space-axis-binding:build'
+cp "${world_space_original}" "${world_space}"
 echo "world-axis-law-mutation=passed"
-perl -0pi -e 's/build: cursor\.take\(space\.builds\)/build: cursor.take(space.operatingSystems)/' "$world_space"
-if cmp -s "$world_space" "$world_space_original"
-then
-    echo "world iterator axis mutation was not applied"
-    exit 1
+perl -0pi -e 's/build: cursor\.take\(space\.builds\)/build: cursor.take(space.operatingSystems)/' "${world_space}"
+if cmp -s "${world_space}" "${world_space_original}"; then
+	echo "world iterator axis mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/world-iterator-axis.log" 'report.catalog-serialization: world-iterator-axis'
-cp "$world_space_original" "$world_space"
+require_cli_law_failure "${scratch_root}/world-iterator-axis.log" 'report.catalog-serialization: world-iterator-axis'
+cp "${world_space_original}" "${world_space}"
 echo "world-iterator-axis-law-mutation=passed"
-perl -0pi -e 's/        let mutantCount = try encoder\.appendMutants\(mutants\)/        if permissions.executionValues.count > 1 { return try encoder.plan(mutantCount: 1) }\n        let mutantCount = try encoder.appendMutants(mutants)/' "$world_space"
-if cmp -s "$world_space" "$world_space_original"
-then
-    echo "world axis early return mutation was not applied"
-    exit 1
+perl -0pi -e 's/        let mutantCount = try encoder\.appendMutants\(mutants\)/        if permissions.executionValues.count > 1 { return try encoder.plan(mutantCount: 1) }\n        let mutantCount = try encoder.appendMutants(mutants)/' "${world_space}"
+if cmp -s "${world_space}" "${world_space_original}"; then
+	echo "world axis early return mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/world-axis-early-return.log" 'report.catalog-serialization: world-space-axis-shape'
-cp "$world_space_original" "$world_space"
+require_cli_law_failure "${scratch_root}/world-axis-early-return.log" 'report.catalog-serialization: world-space-axis-shape'
+cp "${world_space_original}" "${world_space}"
 echo "world-axis-early-return-law-mutation=passed"
-perl -0pi -e 's/stride \/= values\.count/stride \/= 1/' "$world_space"
-if cmp -s "$world_space" "$world_space_original"
-then
-    echo "world cursor kernel mutation was not applied"
-    exit 1
+perl -0pi -e 's/stride \/= values\.count/stride \/= 1/' "${world_space}"
+if cmp -s "${world_space}" "${world_space_original}"; then
+	echo "world cursor kernel mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/world-cursor-kernel.log" 'report.catalog-serialization: world-space-cursor-kernel'
-cp "$world_space_original" "$world_space"
+require_cli_law_failure "${scratch_root}/world-cursor-kernel.log" 'report.catalog-serialization: world-space-cursor-kernel'
+cp "${world_space_original}" "${world_space}"
 echo "world-cursor-kernel-law-mutation=passed"
-lean_proof="$copy_root/SwiftestProofs/Pipeline.lean"
-lean_proof_original="$scratch_root/Pipeline.lean"
-cp "$lean_proof" "$lean_proof_original"
+lean_proof="${copy_root}/SwiftestProofs/Pipeline.lean"
+lean_proof_original="${scratch_root}/Pipeline.lean"
+cp "${lean_proof}" "${lean_proof_original}"
 perl -0pi -e '$_ .= q{
 def marker := r"\"
 axiom hidden : False
 def trailing := "\""
-}' "$lean_proof"
-if cmp -s "$lean_proof" "$lean_proof_original"
-then
-    echo "Lean raw-string source mutation was not applied"
-    exit 1
+}' "${lean_proof}"
+if cmp -s "${lean_proof}" "${lean_proof_original}"; then
+	echo "Lean raw-string source mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/lean-raw-source.log" 'source.unreadable: lean-raw-string'
-cp "$lean_proof_original" "$lean_proof"
+require_cli_law_failure "${scratch_root}/lean-raw-source.log" 'source.unreadable: lean-raw-string'
+cp "${lean_proof_original}" "${lean_proof}"
 echo "lean-raw-source-law-mutation=passed"
-perl -0pi -e 's/"world": \.string\(world\.rawValue\)/"world": .string("fixed")/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "failure payload mutation was not applied"
-    exit 1
+perl -0pi -e 's/"world": \.string\(world\.rawValue\)/"world": .string("fixed")/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "failure payload mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/failure-payload.log" 'report.catalog-serialization: failure-payload'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/failure-payload.log" 'report.catalog-serialization: failure-payload'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "failure-payload-law-mutation=passed"
-perl -0pi -e 's/"kind": \.string\("baseline-crashed"\)/"kind": .string("baseline-test-failed")/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "failure kind mutation was not applied"
-    exit 1
+perl -0pi -e 's/"kind": \.string\("baseline-crashed"\)/"kind": .string("baseline-test-failed")/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "failure kind mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/failure-kind.log" 'report.catalog-serialization: failure-payload'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/failure-kind.log" 'report.catalog-serialization: failure-payload'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "failure-kind-law-mutation=passed"
-perl -0pi -e 's/            "runtimePipeline": \.string\(catalog\.runtimePipeline\.rawValue\),\n//' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "runtime pipeline omission mutation was not applied"
-    exit 1
+perl -0pi -e 's/            "runtimePipeline": \.string\(catalog\.runtimePipeline\.rawValue\),\n//' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "runtime pipeline omission mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/runtime-pipeline-omission.log" 'report.catalog-serialization: missing:runtimePipeline'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/runtime-pipeline-omission.log" 'report.catalog-serialization: missing:runtimePipeline'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "runtime-pipeline-omission-law-mutation=passed"
-perl -0pi -e 's/                    "world": \.string\(observation\.world\.rawValue\),\n                    "reached":/                    "reached":/' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "mutation world omission mutation was not applied"
-    exit 1
+perl -0pi -e 's/                    "world": \.string\(observation\.world\.rawValue\),\n                    "reached":/                    "reached":/' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "mutation world omission mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/mutation-world-omission.log" 'report.catalog-serialization: mutationObservations-missing:world'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/mutation-world-omission.log" 'report.catalog-serialization: mutationObservations-missing:world'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "mutation-world-omission-law-mutation=passed"
-perl -0pi -e 's/                "evidence": digestValue\(catalog\.review\.evidence\),\n//' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "review evidence omission mutation was not applied"
-    exit 1
+perl -0pi -e 's/                "evidence": digestValue\(catalog\.review\.evidence\),\n//' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "review evidence omission mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/review-omission.log" 'report.catalog-serialization: review-missing:evidence'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/review-omission.log" 'report.catalog-serialization: review-missing:evidence'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "review-evidence-law-mutation=passed"
-perl -0pi -e 's/                    "diagnostic": diagnosticValue\(\$0\.diagnostic\),\n//' "$catalog_serializer"
-if cmp -s "$catalog_serializer" "$catalog_serializer_original"
-then
-    echo "law diagnostic omission mutation was not applied"
-    exit 1
+perl -0pi -e 's/                    "diagnostic": diagnosticValue\(\$0\.diagnostic\),\n//' "${catalog_serializer}"
+if cmp -s "${catalog_serializer}" "${catalog_serializer_original}"; then
+	echo "law diagnostic omission mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/law-diagnostic-omission.log" 'report.catalog-serialization: lawObservations-missing:diagnostic'
-cp "$catalog_serializer_original" "$catalog_serializer"
+require_cli_law_failure "${scratch_root}/law-diagnostic-omission.log" 'report.catalog-serialization: lawObservations-missing:diagnostic'
+cp "${catalog_serializer_original}" "${catalog_serializer}"
 echo "law-diagnostic-law-mutation=passed"
-perl -0pi -e 's/state = \.active\(prior\.including\(observed\)\)/state = .active(FileEventHealth.initial.including(observed))/' "$event_lease"
-if cmp -s "$event_lease" "$event_lease_original"
-then
-    echo "event generation reset mutation was not applied"
-    exit 1
+perl -0pi -e 's/state = \.active\(prior\.including\(observed\)\)/state = .active(FileEventHealth.initial.including(observed))/' "${event_lease}"
+if cmp -s "${event_lease}" "${event_lease_original}"; then
+	echo "event generation reset mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/epoch-reset.log" 'adapter.event-generation-witness: completion-preservation'
-cp "$event_lease_original" "$event_lease"
+require_cli_law_failure "${scratch_root}/epoch-reset.log" 'adapter.event-generation-witness: completion-preservation'
+cp "${event_lease_original}" "${event_lease}"
 echo "event-generation-reset-law-mutation=passed"
-perl -0pi -e 's/first = firstAttributePath/first = firstAttributePath == path ? firstAttributePath : path/' "$event_lease"
-if cmp -s "$event_lease" "$event_lease_original"
-then
-    echo "first attribute path mutation was not applied"
-    exit 1
+perl -0pi -e 's/first = firstAttributePath/first = firstAttributePath == path ? firstAttributePath : path/' "${event_lease}"
+if cmp -s "${event_lease}" "${event_lease_original}"; then
+	echo "first attribute path mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/first-path-retention.log" 'adapter.event-generation-witness: path-retention'
-cp "$event_lease_original" "$event_lease"
+require_cli_law_failure "${scratch_root}/first-path-retention.log" 'adapter.event-generation-witness: path-retention'
+cp "${event_lease_original}" "${event_lease}"
 echo "first-path-retention-law-mutation=passed"
-perl -0pi -e 's/switch health\.complete\(continuity\)/switch health.snapshot/' "$event_lease"
-if cmp -s "$event_lease" "$event_lease_original"
-then
-    echo "verified witness bypass mutation was not applied"
-    exit 1
+perl -0pi -e 's/switch health\.complete\(continuity\)/switch health.snapshot/' "${event_lease}"
+if cmp -s "${event_lease}" "${event_lease_original}"; then
+	echo "verified witness bypass mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/verified-witness-bypass.log" 'adapter.event-generation-witness: verified-retention'
-cp "$event_lease_original" "$event_lease"
+require_cli_law_failure "${scratch_root}/verified-witness-bypass.log" 'adapter.event-generation-witness: verified-retention'
+cp "${event_lease_original}" "${event_lease}"
 echo "verified-witness-law-mutation=passed"
-perl -0pi -e 's/guard finalInput == reportInput else/guard finalInput.continuity == reportInput.continuity else/' "$command_source"
-if cmp -s "$command_source" "$command_source_original"
-then
-    echo "prepublication continuity mutation was not applied"
-    exit 1
+perl -0pi -e 's/guard finalInput == reportInput else/guard finalInput.continuity == reportInput.continuity else/' "${command_source}"
+if cmp -s "${command_source}" "${command_source_original}"; then
+	echo "prepublication continuity mutation was not applied"
+	exit 1
 fi
-require_cli_law_failure "$scratch_root/prepublication-continuity.log" 'adapter.event-generation-witness: prepublication-witness'
-cp "$command_source_original" "$command_source"
+require_cli_law_failure "${scratch_root}/prepublication-continuity.log" 'adapter.event-generation-witness: prepublication-witness'
+cp "${command_source_original}" "${command_source}"
 echo "prepublication-witness-law-mutation=passed"
-macro_source="$copy_root/Sources/SwiftestMacros/SwiftestMacroExpansion.swift"
-macro_original="$scratch_root/SwiftestMacroExpansion.swift"
-cp "$macro_source" "$macro_original"
-perl -0pi -e 's/return """\n        /return """\n        let __swiftestInjected = Process()\n        /' "$macro_source"
-if cmp -s "$macro_source" "$macro_original"
-then
-    echo "macro output mutation was not applied"
-    exit 1
+macro_source="${copy_root}/Sources/SwiftestMacros/SwiftestMacroExpansion.swift"
+macro_original="${scratch_root}/SwiftestMacroExpansion.swift"
+cp "${macro_source}" "${macro_original}"
+perl -0pi -e 's/return """\n        /return """\n        let __swiftestInjected = Process()\n        /' "${macro_source}"
+if cmp -s "${macro_source}" "${macro_original}"; then
+	echo "macro output mutation was not applied"
+	exit 1
 fi
-macro_log="$scratch_root/macro-output.log"
+macro_log="${scratch_root}/macro-output.log"
 if swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/clean-build" \
-    --target SwiftestTestingTests >"$macro_log" 2>&1
-then
-    echo "generated macro violation survived"
-    exit 1
+	--package-path "${copy_root}" --scratch-path "${scratch_root}/clean-build" \
+	--target SwiftestTestingTests >"${macro_log}" 2>&1; then
+	echo "generated macro violation survived"
+	exit 1
 fi
-if ! grep -Fq 'macro expansion violates Swiftest laws' "$macro_log"
-then
-    sed -n '1,200p' "$macro_log"
-    exit 1
+if ! grep -Fq 'macro expansion violates Swiftest laws' "${macro_log}"; then
+	sed -n '1,200p' "${macro_log}"
+	exit 1
 fi
-cp "$macro_original" "$macro_source"
+cp "${macro_original}" "${macro_source}"
 echo "macro-expansion-output=passed"
-incremental_created="$copy_root/Sources/SwiftestFaults/InsertedViolation.swift"
-cp "$incremental_original" "$incremental_created"
-perl -0pi -e 's/\A[\s\S]*\z/\/\/ gate-probe\n/' "$incremental_created"
-if ! grep -Fxq '// gate-probe' "$incremental_created"
-then
-    echo "new source violation was not inserted"
-    exit 1
+incremental_created="${copy_root}/Sources/SwiftestFaults/InsertedViolation.swift"
+cp "${incremental_original}" "${incremental_created}"
+perl -0pi -e 's/\A[\s\S]*\z/\/\/ gate-probe\n/' "${incremental_created}"
+if ! grep -Fxq '// gate-probe' "${incremental_created}"; then
+	echo "new source violation was not inserted"
+	exit 1
 fi
 plugin_missed_new_source=0
 if swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-    --target SwiftestFaults >"$incremental_log" 2>&1
-then
-    plugin_missed_new_source=1
-elif ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "$incremental_log"
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+	--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+	--target SwiftestFaults >"${incremental_log}" 2>&1; then
+	plugin_missed_new_source=1
+elif ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "${incremental_log}"; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-cli_bin_dir=$vnode_bin_dir
-if "$cli_bin_dir/swiftest" laws "$copy_root" >"$incremental_log" 2>&1
-then
-    echo "CLI laws survived a new source violation"
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+cli_bin_dir=${vnode_bin_dir}
+if "${cli_bin_dir}/swiftest" laws "${copy_root}" >"${incremental_log}" 2>&1; then
+	echo "CLI laws survived a new source violation"
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-if ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "$incremental_log"
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+if ! grep -Fq 'Sources/SwiftestFaults/InsertedViolation.swift:1:1: comment.forbidden' "${incremental_log}"; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-rm "$incremental_created"
+rm "${incremental_created}"
 echo "cli-laws-new-target-source=passed"
-if test "$plugin_missed_new_source" -eq 1
-then
-    echo "plugin-new-target-source=GAP"
-    exit 1
+if test "${plugin_missed_new_source}" -eq 1; then
+	echo "plugin-new-target-source=GAP"
+	exit 1
 fi
 echo "plugin-new-target-source=passed"
 if ! swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-    --target SwiftestFaults >"$incremental_log" 2>&1
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+	--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+	--target SwiftestFaults >"${incremental_log}" 2>&1; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-unexpected_root_source="$copy_root/unexpected.swift"
-cp "$incremental_original" "$unexpected_root_source"
+unexpected_root_source="${copy_root}/unexpected.swift"
+cp "${incremental_original}" "${unexpected_root_source}"
 if swift build --disable-sandbox --disable-index-store -j 2 \
-    --package-path "$copy_root" --scratch-path "$scratch_root/build" \
-    --target SwiftestFaults >"$incremental_log" 2>&1
-then
-    echo "plugin-new-root-file=GAP"
-    exit 1
+	--package-path "${copy_root}" --scratch-path "${scratch_root}/build" \
+	--target SwiftestFaults >"${incremental_log}" 2>&1; then
+	echo "plugin-new-root-file=GAP"
+	exit 1
 fi
-if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "$incremental_log"
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "${incremental_log}"; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-if "$cli_bin_dir/swiftest" laws "$copy_root" >"$incremental_log" 2>&1
-then
-    echo "CLI laws survived an unknown root file"
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+if "${cli_bin_dir}/swiftest" laws "${copy_root}" >"${incremental_log}" 2>&1; then
+	echo "CLI laws survived an unknown root file"
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "$incremental_log"
-then
-    sed -n '1,200p' "$incremental_log"
-    exit 1
+if ! grep -Fq 'unexpected.swift:1:1: source.unclassified' "${incremental_log}"; then
+	sed -n '1,200p' "${incremental_log}"
+	exit 1
 fi
-rm "$unexpected_root_source"
+rm "${unexpected_root_source}"
 echo "plugin-new-root-file=passed"
 echo "cli-laws-new-root-file=passed"
-lean_shim_dir="$scratch_root/lean-path-shim"
-mkdir -p "$lean_shim_dir" "$copy_root/.lake/build/bin"
-cp /usr/bin/false "$lean_shim_dir/lake"
-cp /usr/bin/false "$lean_shim_dir/lean"
-cp /usr/bin/false "$lean_shim_dir/leanchecker"
-cp /usr/bin/false "$lean_shim_dir/swift"
-cp /usr/bin/false "$copy_root/.lake/build/bin/leanchecker"
-if ! PATH="$lean_shim_dir:$PATH" "$cli_bin_dir/swiftest" laws "$copy_root" --formal >"$incremental_log" 2>&1
-then
-    sed -n '1,200p' "$incremental_log"
-    if grep -Fq 'attributeAmbiguity(' "$incremental_log"
-    then
-        echo "formal-path-shim=UNSETTLED attribute event during proof snapshot"
-        exit 1
-    fi
-    echo "pinned Lean toolchain used an untrusted executable"
-    exit 1
+if test "${proof_toolchain}" = enabled; then
+	check_pinned_proof_toolchain
 fi
-echo "lean-path-shim=passed"
-if ! PATH="$lean_shim_dir:$PATH" "$copy_root/Scripts/formal-check" >"$incremental_log" 2>&1
-then
-    sed -n '1,200p' "$incremental_log"
-    echo "formal check used an untrusted Lean executable"
-    exit 1
-fi
-echo "formal-check-path-shim=passed"

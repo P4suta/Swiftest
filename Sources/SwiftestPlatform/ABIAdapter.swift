@@ -925,7 +925,41 @@ enum ABIAdapter {
             changedNanoseconds: Int64(attributes.st_ctimespec.tv_nsec)
         )
     }
+
+    static func volumeAccessTimeUpdates(at path: String) -> VolumeAccessTimeUpdates? {
+        volumeMountMetadata(at: path)?.accessTimeUpdates
+    }
+
+    static func volumeMountMetadata(at path: String) -> VolumeMountMetadata? {
+        let descriptor = openDirectoryWithoutSymlinks(at: path)
+        guard descriptor >= 0 else {
+            return nil
+        }
+        defer {
+            closeOrTerminate(descriptor)
+        }
+        var attributes = statfs()
+        guard Darwin.fstatfs(descriptor, &attributes) == 0 else {
+            return nil
+        }
+        let updates: VolumeAccessTimeUpdates = attributes.f_flags & UInt32(MNT_NOATIME) == 0 ? .enabled : .disabled
+        return withUnsafeBytes(of: attributes.f_mntonname) { bytes -> VolumeMountMetadata? in
+            guard let end = bytes.firstIndex(of: 0),
+                let mountPoint = String(bytes: bytes[..<end], encoding: .utf8) else {
+                return nil
+            }
+            return VolumeMountMetadata(mountPoint: mountPoint, accessTimeUpdates: updates)
+        }
+    }
     #else
+    static func volumeMountMetadata(at path: String) -> VolumeMountMetadata? {
+        nil
+    }
+
+    static func volumeAccessTimeUpdates(at path: String) -> VolumeAccessTimeUpdates? {
+        nil
+    }
+
     static func fileEventMetadata(_ descriptor: Int32) -> FileEventMetadata? {
         nil
     }

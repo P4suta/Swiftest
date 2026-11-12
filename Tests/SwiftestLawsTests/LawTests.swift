@@ -141,6 +141,42 @@ func commentsRemainForbiddenOutsideSwiftYAMLAndLeanStrings() {
 }
 
 @Test
+func workflowVersionAnnotationsRequirePinnedActions() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-action-versions-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let workflow = try ArtifactPath.parse(".github/workflows/quality.yml")
+    let hash = "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+    let lines = [
+        "  - uses: actions/checkout@\(hash) # v5.1.0",
+        "    uses: actions/checkout@\(hash) # v5.1.0",
+        "  - uses: actions/checkout@v5 # v5.1.0",
+        "  - uses: actions/checkout@\(hash.dropLast()) # v5.1.0",
+        "  - uses: actions/checkout@\(hash) # v5.1.0 annotation",
+        "  - uses: actions/checkout@\(hash) # v5",
+        "  - run: actions/checkout@\(hash) # v5.1.0",
+        "# v5.1.0",
+    ]
+    try FileSystemBoundary.write(
+        Data((lines.joined(separator: "\n") + "\n").utf8),
+        relativePath: workflow,
+        capability: scratch.issueWriteCapability()
+    )
+    let script = try ArtifactPath.parse("Scripts/quality")
+    try FileSystemBoundary.write(
+        Data((lines[0] + "\n").utf8),
+        relativePath: script,
+        capability: scratch.issueWriteCapability()
+    )
+    let report = try LawScanner.scan(root: scratch.path)
+    let comments = report.violations.filter { $0.law == .forbiddenComment }
+    #expect(comments.filter { $0.location.file == ".github/workflows/quality.yml" }
+        .map(\.location.line).sorted() == [3, 4, 5, 6, 7, 8])
+    #expect(comments.contains { $0.location.file == "Scripts/quality" })
+}
+
+@Test
 func lawScannerRejectsLeanRawStringBeforeHiddenProofHole() throws {
     let scratch = try ScratchDirectoryOwner(
         parent: "/private/tmp",
@@ -244,6 +280,8 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     let report = try ArtifactPath.parse("report.json")
     let targetResource = try ArtifactPath.parse("Sources/SwiftestModel/Resources/result.json")
     let workflowOutput = try ArtifactPath.parse(".github/workflows/result.xml")
+    let workflowLint = try ArtifactPath.parse(".github/actionlint.yaml")
+    let workflowLintOutput = try ArtifactPath.parse(".github/actionlint-output.yaml")
     let distributionOutput = try ArtifactPath.parse("dist/Generated.swift")
     let signingOutput = try ArtifactPath.parse(".local-signing/Generated.swift")
     try FileSystemBoundary.write(Data("{}".utf8), relativePath: report, capability: scratch.issueWriteCapability())
@@ -257,6 +295,13 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
         relativePath: workflowOutput,
         capability: scratch.issueWriteCapability()
     )
+    for path in [workflowLint, workflowLintOutput] {
+        try FileSystemBoundary.write(
+            Data("self-hosted-runner:\n  labels:\n    - xcode-27\n".utf8),
+            relativePath: path,
+            capability: scratch.issueWriteCapability()
+        )
+    }
     try FileSystemBoundary.write(
         Data("// generated\n".utf8),
         relativePath: distributionOutput,
@@ -275,8 +320,43 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
     #expect(result.violations.contains {
         $0.law == .unclassifiedSource && $0.location.file == ".github/workflows/result.xml"
     })
+    #expect(!result.violations.contains { $0.location.file == ".github/actionlint.yaml" })
+    #expect(result.violations.contains {
+        $0.law == .unclassifiedSource && $0.location.file == ".github/actionlint-output.yaml"
+    })
     #expect(!result.violations.contains {
         $0.location.file == "dist/Generated.swift" || $0.location.file == ".local-signing/Generated.swift"
+    })
+}
+
+@Test
+func scannerClassifiesOnlyTheProofStorageDecision() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-decision-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let permitted = "docs/adr/isolate-memory-mapped-proof-artifacts.md"
+    let unrelated = "docs/adr/unclassified.md"
+    for name in [permitted, unrelated] {
+        try FileSystemBoundary.write(
+            Data("Decision\n".utf8),
+            relativePath: try ArtifactPath.parse(name),
+            capability: scratch.issueWriteCapability()
+        )
+    }
+    let report = try LawScanner.scan(root: scratch.path)
+    #expect(!report.violations.contains { $0.location.file == permitted })
+    #expect(report.violations.contains {
+        $0.location.file == unrelated && $0.law == .handwrittenDocumentation
+    })
+    try FileSystemBoundary.write(
+        Data([0xff]),
+        relativePath: try ArtifactPath.parse(permitted),
+        capability: scratch.issueWriteCapability()
+    )
+    let invalid = try LawScanner.scan(root: scratch.path)
+    #expect(invalid.violations.contains {
+        $0.location.file == permitted && $0.law == .unreadableSource
     })
 }
 

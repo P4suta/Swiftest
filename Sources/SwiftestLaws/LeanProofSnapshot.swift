@@ -188,7 +188,7 @@ struct LeanProofSnapshot: ~Copyable {
     let root: String
     let proofModules: [String]
 
-    init(sourceRoot: String) throws(LeanProofSnapshotError) {
+    init(sourceRoot: String, scratchParent: String = "/private/tmp") throws(LeanProofSnapshotError) {
         let sourceIdentity = try Self.directoryIdentity(sourceRoot)
         let source = sourceIdentity.canonicalPath
         let inventory = try Self.collect(root: source)
@@ -206,7 +206,7 @@ struct LeanProofSnapshot: ~Copyable {
         case .present:
             snapshotInput = sourceInput
         }
-        let scratch = try Self.makeScratch()
+        let scratch = try Self.makeScratch(parent: scratchParent)
         let snapshotPath = scratch.path + "/source"
         try Self.writeSnapshot(snapshotInput, scratch: scratch)
         let snapshotIdentity = try Self.directoryIdentity(snapshotPath)
@@ -395,10 +395,10 @@ struct LeanProofSnapshot: ~Copyable {
         }
     }
 
-    private static func makeScratch() throws(LeanProofSnapshotError) -> ScratchDirectoryOwner {
+    private static func makeScratch(parent: String) throws(LeanProofSnapshotError) -> ScratchDirectoryOwner {
         do {
             return try ScratchDirectoryOwner(
-                parent: "/private/tmp",
+                parent: parent,
                 name: "swiftest-proof-" + String(PlatformClock.monotonicNanoseconds().rawValue)
             )
         } catch let error {

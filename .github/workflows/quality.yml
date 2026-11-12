@@ -1,20 +1,103 @@
 name: quality
-
 on:
   push:
+    branches: [main]
   pull_request:
-
+permissions:
+  contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  assurance:
+  campaign:
+    name: Verify ${{ matrix.phase }}
     runs-on: xcode-27
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        phase: [source, mutations, proof-toolchain, formal, dogfood]
+    env:
+      QUALITY_PHASE: ${{ matrix.phase }}
     steps:
-      - uses: actions/checkout@v5
-      - run: sudo xcode-select --switch /Applications/Xcode_27.0.app
-      - run: curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-      - run: echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      - run: Scripts/quality
-      - uses: actions/checkout@v5
+      - name: Create checkout volume without access-time updates
+        id: checkout-volume
+        run: |
+          set -euo pipefail
+          image="${RUNNER_TEMP}/swiftest-source.sparsebundle"
+          diskutil image create blank --size 8589934592 --format UDSB \
+            --fs APFS --volumeName SwiftestSource "${image}"
+          diskutil image attach --nobrowse --mountOptions noatime \
+            --mountPoint "${GITHUB_WORKSPACE}" --mp forceMount "${image}"
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Select pinned Xcode
+        run: |
+          set -euo pipefail
+          test -L /Applications/Xcode.app
+          sudo ln -sfn /Applications/Xcode_27.app /Applications/Xcode.app
+          sudo xcode-select --switch /Applications/Xcode_27.app
+          xcodebuild -version
+          xcrun swift --version
+      - name: Install pinned proof toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64)
+              architecture=aarch64
+              checksum=7ad829861392c718dfebde3a83b5c8508df47be02af68894b094b0b3952616e5
+              ;;
+            x86_64)
+              architecture=x86_64
+              checksum=8a340b309d8ed2e96f930761fa223b3af57a38f5d253b53ac90293c9516f8cd4
+              ;;
+            *) exit 1 ;;
+          esac
+          archive="${RUNNER_TEMP}/elan-${architecture}-apple-darwin.tar.gz"
+          gh release download v4.2.4 --repo leanprover/elan \
+            --pattern "elan-${architecture}-apple-darwin.tar.gz" --output "${archive}"
+          printf '%s  %s\n' "${checksum}" "${archive}" | shasum -a 256 --check
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --no-modify-path \
+            --default-toolchain leanprover/lean4:v4.34.1
+          "${HOME}/.elan/bin/elan" toolchain install leanprover/lean4:v4.34.1
+          printf '%s\n' "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+      - name: Verify source and proofs
+        env:
+          TMPDIR: ${{ matrix.phase == 'dogfood' && runner.temp || format('{0}/.build/temporary', github.workspace) }}
+        run: |
+          mkdir -p "${TMPDIR}"
+          Scripts/quality --phase "${QUALITY_PHASE}"
+      - name: Check out external test target
+        if: matrix.phase == 'dogfood'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: P4suta/njutest
           path: .build/dogfood/njutest
-      - run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"
+          persist-credentials: false
+      - name: Verify external test target
+        if: matrix.phase == 'dogfood'
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"
+      - name: Detach checkout volume
+        if: always() && steps.checkout-volume.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        run: diskutil eject "${GITHUB_WORKSPACE}"
+  assurance:
+    name: Verify source and proofs
+    needs: campaign
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every campaign phase
+        env:
+          RESULT: ${{ needs.campaign.result }}
+        run: test "${RESULT}" = success
