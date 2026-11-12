@@ -330,6 +330,37 @@ func scannerRejectsOutputArtifactsEvenWithRecognizedExtensions() throws {
 }
 
 @Test
+func scannerClassifiesOnlyTheProofStorageDecision() throws {
+    let scratch = try ScratchDirectoryOwner(
+        parent: "/private/tmp",
+        name: "swiftest-decision-" + String(PlatformClock.monotonicNanoseconds().rawValue)
+    )
+    let permitted = "docs/adr/isolate-memory-mapped-proof-artifacts.md"
+    let unrelated = "docs/adr/unclassified.md"
+    for name in [permitted, unrelated] {
+        try FileSystemBoundary.write(
+            Data("Decision\n".utf8),
+            relativePath: try ArtifactPath.parse(name),
+            capability: scratch.issueWriteCapability()
+        )
+    }
+    let report = try LawScanner.scan(root: scratch.path)
+    #expect(!report.violations.contains { $0.location.file == permitted })
+    #expect(report.violations.contains {
+        $0.location.file == unrelated && $0.law == .handwrittenDocumentation
+    })
+    try FileSystemBoundary.write(
+        Data([0xff]),
+        relativePath: try ArtifactPath.parse(permitted),
+        capability: scratch.issueWriteCapability()
+    )
+    let invalid = try LawScanner.scan(root: scratch.path)
+    #expect(invalid.violations.contains {
+        $0.location.file == permitted && $0.law == .unreadableSource
+    })
+}
+
+@Test
 func packageManifestMustMatchTheTypedModuleGraph() throws {
     let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

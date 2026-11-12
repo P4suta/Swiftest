@@ -55,7 +55,19 @@ public enum FormalVerification {
         """
 
     public static func leanOracle(root: String) throws(FormalVerificationError) -> String {
-        let snapshot = try makeSnapshot(root: root)
+        let volume: NoAccessTimeVolumeOwner
+        do {
+            volume = try NoAccessTimeVolumeOwner()
+        } catch let error {
+            throw .platform(error)
+        }
+        return try volume.withRoot { (scratchParent: String) throws(FormalVerificationError) -> String in
+            try leanOracle(root: root, scratchParent: scratchParent)
+        }
+    }
+
+    private static func leanOracle(root: String, scratchParent: String) throws(FormalVerificationError) -> String {
+        let snapshot = try makeSnapshot(root: root, scratchParent: scratchParent)
         let toolchain: PinnedLeanToolchain
         do {
             toolchain = try PinnedLeanToolchain.resolve()
@@ -94,9 +106,9 @@ public enum FormalVerification {
         return oracle.standardOutput
     }
 
-    private static func makeSnapshot(root: String) throws(FormalVerificationError) -> LeanProofSnapshot {
+    private static func makeSnapshot(root: String, scratchParent: String) throws(FormalVerificationError) -> LeanProofSnapshot {
         do {
-            return try LeanProofSnapshot(sourceRoot: root)
+            return try LeanProofSnapshot(sourceRoot: root, scratchParent: scratchParent)
         } catch let error {
             switch error {
             case .trust(let trust):

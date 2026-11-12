@@ -1,21 +1,21 @@
 #!/bin/sh
 set -eu
-project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+project_root=$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd)
 module_cache=$(mktemp -d "${TMPDIR:-/tmp}/swiftest-module-cache.XXXXXX")
-trap 'rm -rf "$module_cache"' EXIT HUP INT TERM
-export CLANG_MODULE_CACHE_PATH="$module_cache"
-export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
-cd "$project_root"
-seal_before="$module_cache/seal-before"
-seal_after="$module_cache/seal-after"
-find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"$seal_before"
+trap 'rm -rf "${module_cache}"' EXIT HUP INT TERM
+export CLANG_MODULE_CACHE_PATH="${module_cache}"
+export SWIFTPM_MODULECACHE_OVERRIDE="${module_cache}"
+cd "${project_root}"
+seal_before="${module_cache}/seal-before"
+seal_after="${module_cache}/seal-after"
+find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore docs -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"${seal_before}"
 swift build --disable-sandbox --disable-index-store -j 4
-"$project_root/Scripts/platform-check"
+"${project_root}/Scripts/platform-check"
 swift test --disable-sandbox --disable-index-store -j 4
 swift run --disable-sandbox --disable-index-store -j 4 swiftest laws . --formal
-"$project_root/Scripts/compile-fail"
-"$project_root/Scripts/mutate-laws"
-"$project_root/Scripts/formal-check"
-"$project_root/Scripts/dogfood"
-find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"$seal_after"
-cmp "$seal_before" "$seal_after"
+"${project_root}/Scripts/compile-fail"
+"${project_root}/Scripts/mutate-laws"
+"${project_root}/Scripts/formal-check"
+"${project_root}/Scripts/dogfood"
+find Package.swift Plugins Sources Tests Fixtures SwiftestProofs SwiftestProofs.lean lakefile.toml lean-toolchain Scripts .githooks .github .gitignore docs -type f -exec shasum -a 256 {} \; | LC_ALL=C sort >"${seal_after}"
+cmp "${seal_before}" "${seal_after}"

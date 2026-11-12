@@ -192,6 +192,17 @@ public enum LawScanner {
         var importsByPath: [String: Set<String>] = [:]
         for path in paths {
             let relative = relativePath(path, root: normalizedRoot)
+            if relative == "docs/adr/isolate-memory-mapped-proof-artifacts.md" {
+                do {
+                    let data = try FileSystemBoundary.read(path: path)
+                    if String(data: data, encoding: .utf8) == nil {
+                        violations.append(violation(.unreadableSource, file: relative, subject: "utf8"))
+                    }
+                } catch {
+                    violations.append(violation(.unreadableSource, file: relative, subject: "read"))
+                }
+                continue
+            }
             if relative.hasSuffix(".md") || relative.hasSuffix(".markdown") {
                 violations.append(violation(.handwrittenDocumentation, file: relative, subject: "markdown"))
                 continue
@@ -2969,7 +2980,7 @@ public enum LawScanner {
     ]
 
     private static let allowedTopLevelDirectories: Set<String> = [
-        ".githooks", ".github", "Fixtures", "Plugins", "Scripts", "Sources", "SwiftestProofs", "Tests",
+        ".githooks", ".github", "Fixtures", "Plugins", "Scripts", "Sources", "SwiftestProofs", "Tests", "docs",
     ]
 
     private static func moduleName(relativePath: String) -> String? {
