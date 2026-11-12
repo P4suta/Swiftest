@@ -23,7 +23,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Select pinned Xcode
-        run: sudo xcode-select --switch /Applications/Xcode_27.0.app
+        run: |
+          set -euo pipefail
+          test -L /Applications/Xcode.app
+          sudo ln -sfn /Applications/Xcode_27.app /Applications/Xcode.app
+          sudo xcode-select --switch /Applications/Xcode_27.app
+          xcodebuild -version
+          xcrun swift --version
       - name: Install pinned proof toolchain
         env:
           GH_TOKEN: ${{ github.token }}
