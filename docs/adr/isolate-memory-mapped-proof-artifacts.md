@@ -38,4 +38,3 @@ Reconsider if system mounting becomes unavailable or Lean stops mapping artifact
 
 Require native source and artifact mapping, mutation-rejection, cleanup, and mount-option tests.
 Run the full pinned source and formal verification gates.
-Verification remains pending.
