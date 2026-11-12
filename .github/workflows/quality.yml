@@ -18,6 +18,15 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 120
     steps:
+      - name: Create checkout volume without access-time updates
+        id: checkout-volume
+        run: |
+          set -euo pipefail
+          image="${RUNNER_TEMP}/swiftest-source.sparsebundle"
+          diskutil image create blank --size 8589934592 --format UDSB \
+            --fs APFS --volumeName SwiftestSource "${image}"
+          diskutil image attach --nobrowse --mountOptions noatime \
+            --mountPoint "${GITHUB_WORKSPACE}" --mp forceMount "${image}"
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -65,3 +74,7 @@ jobs:
           persist-credentials: false
       - name: Verify external test target
         run: Scripts/dogfood "$GITHUB_WORKSPACE/.build/dogfood/njutest/fast-anser"
+      - name: Detach checkout volume
+        if: always() && steps.checkout-volume.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        run: diskutil eject "${GITHUB_WORKSPACE}"
